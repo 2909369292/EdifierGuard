@@ -25,12 +25,21 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import _bootstrap
+    _ROOT = _bootstrap.ROOT
+except Exception:
+    _ROOT = os.path.dirname(os.path.abspath(
+        sys.executable if getattr(sys, "frozen", False) else __file__))
+
+
 def _add_dll_dirs():
-    for d in (r"C:\Program Files\HECATE",
-              os.path.dirname(os.path.abspath(
-                  sys.executable if getattr(sys, "frozen", False) else __file__))):
+    for d in (r"C:\Program Files\HECATE", _ROOT,
+              os.path.join(_ROOT or "", "lib", "hid"),
+              os.path.join(_ROOT or "", "runtime")):
         try:
-            if os.path.isdir(d):
+            if d and os.path.isdir(d):
                 os.add_dll_directory(d)
         except Exception:
             pass

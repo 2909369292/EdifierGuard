@@ -135,16 +135,30 @@ HECATE G3 Max **底座版**用的是 **2.4G USB 接收器（dongle）**，而 Wi
 - 运行时依赖已**内置**（`lib\hid` + `hidapi.dll`），无需 `pip install`；
 - **不需要管理员权限**。
 
-### 步骤
+### 步骤（自包含安装）
 
 1. 获取本项目（`git clone` 或下载 ZIP 解压）；
-2. **双击 `INSTALL.bat`**（等价于 `python install.py`）：
-   - 在「启动」文件夹写入 `EdifierGuard.vbs`（登录时静默自启）；
+2. **双击 `INSTALL.bat`**（等价于 `python install.py`）。它会：
+   - 把运行所需的全部文件**复制**到一个固定目录：`%LOCALAPPDATA%\EdifierGuard`；
+   - 在「启动」文件夹写入一个约 1KB 的 `EdifierGuard.vbs`（登录时静默自启，指向固定目录）；
    - 立即启动 `watchdog.py`（由它拉起并守护 `guard.py`）；
    - 打印一次状态验证。
-3. **体检**：`python guard.py --doctor`
+3. **体检**：`python "%LOCALAPPDATA%\EdifierGuard\guard.py" --doctor`
 
-> 卸载：删除「启动」文件夹里的 `EdifierGuard.vbs`，再执行 `python guard.py --restore` 恢复设备。
+> **为什么要复制到固定目录？**
+> 这样程序与「项目文件夹」**完全解耦**：项目随便移动 / 重命名 / 删除，开机自启都不受影响。
+> 「启动」文件夹里只放一个很小的启动器（而不是整包）——Windows 本来也不会执行启动夹子目录里的东西，
+> 把程序本体放在固定目录既能自启、又不会被误执行。
+> 固定目录可用环境变量 `EDIFIERGUARD_HOME` 覆盖（高级用法）。
+
+### 卸载
+
+```bat
+python install.py --uninstall          :: 停止 + 移除启动器（保留固定目录）
+python install.py --uninstall --purge  :: 连固定目录一起删除
+```
+
+卸载会自动停止进程，并把音频端点恢复为「可用」。
 
 ---
 
@@ -160,24 +174,30 @@ HECATE G3 Max **底座版**用的是 **2.4G USB 接收器（dongle）**，而 Wi
 | 前台详细日志 | `python guard.py --debug` |
 | 把所有端点恢复为可用 | `python guard.py --restore` |
 | 解除熔断 | `python guard.py --reset-fuse` |
-| 自测（仅逻辑，安全） | `python selftest.py` |
-| 自测（故障注入，会临时弄坏再修复） | `python selftest.py --inject` |
+| 自测（仅逻辑，安全） | `python tools\selftest.py` |
+| 自测（故障注入，会临时弄坏再修复） | `python tools\selftest.py --inject` |
+
+> 安装后，真正运行的是固定目录里的副本（`%LOCALAPPDATA%\EdifierGuard`）。
+> 上表的 `python guard.py …` 对**项目副本**和**固定副本**都成立——它们操作的是**同一份系统状态**，只有日志/PID 的位置不同。
 
 **图形化 / 脚本入口：**
 
 | 文件 | 作用 |
 |---|---|
-| `INSTALL.bat` | 安装（写自启 + 启动） |
-| `启动.vbs` | 手动启动（不写自启、不改注册表） |
-| `停止.bat` | 停止守护，并把端点恢复为可用 |
-| `测试_状态面板.bat` | 2 秒刷新一次的状态面板 |
-| `测试_实时日志.bat` | 实时跟踪 `guard.log` |
-| `START_MONITOR.bat` | 运行 `monitor.py` 实时监控 |
-| `FIX_AUDIO_DEVICE.bat` | 底层 USB 音频接口被禁用时的急救（**需管理员**） |
-| `CLEAN_OLD_TASK.bat` | 清理历史遗留的计划任务（**需管理员**） |
-| `gui_server.py` + `preview.html` | 本地「信号观察器」网页（展示原始 HID 报文与判定） |
-| `repair_device.py` | 端点状态修复工具（免管理员） |
-| `watch.py` | HID 信号观察 / 逆向面包板 |
+| `INSTALL.bat` | 安装（复制到固定目录 + 写自启 + 启动） |
+| `scripts\启动.vbs` | 手动启动（不写自启、不改注册表） |
+| `scripts\停止.bat` | 停止守护，并把端点恢复为可用 |
+| `scripts\测试_状态面板.bat` | 2 秒刷新一次的状态面板 |
+| `scripts\测试_实时日志.bat` | 实时跟踪 `guard.log` |
+| `scripts\START_MONITOR.bat` | 运行 `tools\monitor.py` 实时监控 |
+| `scripts\FIX_AUDIO_DEVICE.bat` | 底层 USB 音频接口被禁用时的急救（**需管理员**） |
+| `scripts\CLEAN_OLD_TASK.bat` | 清理历史遗留的计划任务（**需管理员**） |
+| `tools\gui_server.py` + `tools\preview.html` | 本地「信号观察器」网页（展示原始 HID 报文与判定） |
+| `tools\repair_device.py` | 端点状态修复工具（免管理员） |
+| `tools\watch.py` | HID 信号观察 / 逆向面包板 |
+
+> `scripts\` 下的脚本会**自动指向正在运行的那一份**（优先固定目录），并且**与路径无关**：
+> 它们从自身位置向上查找 `guard.py`，所以项目搬到哪、双击哪个副本都能用。
 
 ---
 
@@ -222,26 +242,46 @@ HECATE G3 Max **底座版**用的是 **2.4G USB 接收器（dongle）**，而 Wi
 
 ## 目录结构
 
+### 源码 / 开发目录（可随意移动、重命名、删除）
+
 ```
 EdifierGuard/
-├── guard.py                # 核心守护进程（检测 → 判定 → 动作 → 校验）
-├── watchdog.py             # 看门狗：退出/卡死自动重启
-├── install.py              # 安装器（写自启 + 启动），免管理员
-├── selftest.py             # 自测 / 故障注入
-├── monitor.py              # 实时监控面板
-├── watch.py                # HID 信号观察（逆向面包板）
-├── gui_server.py           # 本地「信号观察器」网页服务
-├── preview.html            # 上述网页的前端
-├── repair_device.py        # 端点状态修复工具
-├── guard_config.json       # 配置
-├── lib/hid/                # 内置 hid 模块（cython-hidapi，见第三方许可）
-├── runtime/hidapi.dll      # 内置 HID 动态库
-├── docs/                   # 文档（协议、设计、复盘）
-├── INSTALL.bat             # 安装
-├── 启动.vbs / 停止.bat      # 手动启动 / 停止
-├── 测试_*.bat              # 状态面板 / 实时日志
-├── FIX_AUDIO_DEVICE.bat    # 底层音频接口急救（需管理员）
-└── CLEAN_OLD_TASK.bat      # 清理遗留计划任务（需管理员）
+├── guard.py                 # 核心守护进程（检测 → 判定 → 动作 → 校验）
+├── watchdog.py              # 看门狗：退出/卡死自动重启
+├── install.py               # 安装器 / 卸载器（--uninstall）
+├── INSTALL.bat              # 安装入口
+├── guard_config.json        # 配置（首次安装时复制到固定目录）
+├── lib/hid/                 # 内置 hid 模块（cython-hidapi，见第三方许可）
+├── runtime/hidapi.dll       # 内置 HID 动态库（放 runtime/python.exe 可连解释器一起带）
+├── docs/                    # 文档（协议、设计、复盘）
+├── tools/                   # 开发 / 诊断工具（路径无关）
+│   ├── selftest.py          #   自测 / 故障注入
+│   ├── monitor.py           #   实时监控面板
+│   ├── watch.py             #   HID 信号观察（逆向面包板）
+│   ├── gui_server.py        #   本地「信号观察器」网页服务
+│   ├── preview.html         #   上述网页前端
+│   ├── repair_device.py     #   端点状态修复
+│   └── _bootstrap.py        #   向上定位项目根（让 tools/ 可任意摆放）
+└── scripts/                 # 启动 / 停止 / 测试脚本
+    ├── 启动.vbs             #   手动启动
+    ├── 停止.bat             #   停止 + 恢复端点
+    ├── 测试_状态面板.bat     #   状态面板
+    ├── 测试_实时日志.bat     #   实时日志
+    ├── START_MONITOR.bat    #   运行 tools/monitor.py
+    ├── FIX_AUDIO_DEVICE.bat #   底层音频接口急救（需管理员）
+    └── CLEAN_OLD_TASK.bat   #   清理遗留计划任务（需管理员）
+```
+
+### 安装后（运行本体，与项目目录解耦）
+
+```
+%LOCALAPPDATA%\EdifierGuard\   ← 固定目录：程序本体 + 日志/PID/心跳
+  guard.py  watchdog.py  install.py
+  guard_config.json  lib\  runtime\  tools\  scripts\
+  guard.log  guard.pid  guard.heartbeat   （运行时产物）
+
+「启动」文件夹\
+  EdifierGuard.vbs             ← 约 1KB 的静默启动器（登录时自启）
 ```
 
 ---
@@ -255,10 +295,16 @@ A：两者解决不同问题。「切换默认设备」只是改路由，设备�
 A：不会。这是 v1 的教训——v2 有「空集合=失败」「操作后独立校验」「失败回滚为可用」「启动自愈」「熔断」五重保护；任何异常都会让设备**回到可用**。
 
 **Q：我把两个守护进程都强杀了，设备还隐藏着怎么办？**
-A：下次登录（自启）或双击 `启动.vbs` 即会自愈；也可直接 `python guard.py --restore`。
+A：下次登录（自启）或双击 `scripts\启动.vbs` 即会自愈；也可直接 `python guard.py --restore`。
+
+**Q：日志在哪？**
+A：跟随**运行的那一份**。安装后运行的是固定目录副本，日志在 `%LOCALAPPDATA%\EdifierGuard\guard.log`；直接从项目目录跑则在项目目录下。
+
+**Q：项目文件夹删了会怎样？**
+A：已经安装的副本照样自启、照常工作（启动器指向固定目录，不指向项目）。想彻底移除请先 `python install.py --uninstall --purge`。
 
 **Q：需要管理员吗？**
-A：不需要。只有 `FIX_AUDIO_DEVICE.bat` / `CLEAN_OLD_TASK.bat` 这两个「急救 / 清理」脚本需要。
+A：不需要。只有 `scripts\FIX_AUDIO_DEVICE.bat` / `scripts\CLEAN_OLD_TASK.bat` 这两个「急救 / 清理」脚本需要。
 
 **Q：会不会影响音质或断开耳机？**
 A：不会。程序只切换**端点可见性**，从不动 PnP、不动驱动、不断链路。

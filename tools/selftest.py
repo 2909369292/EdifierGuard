@@ -24,8 +24,9 @@ import os
 import sys
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _bootstrap  # noqa: F401  # 把「项目根」加入 sys.path
+HERE = _bootstrap.ROOT or os.path.dirname(os.path.abspath(__file__))
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")

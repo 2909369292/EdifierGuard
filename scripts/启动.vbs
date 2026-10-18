@@ -4,15 +4,23 @@
 ' The watchdog launches and supervises guard.py, so use this launcher
 ' (not guard.py directly) to keep the crash-restart protection.
 '
+' Target resolution (stable by design):
+'   1. the fixed install location  %LOCALAPPDATA%\EdifierGuard  (if present)
+'   2. otherwise the project folder this script ships in (..\ from here)
+'
 ' Python is auto-detected: bundled runtime\, then PATH, then the py launcher.
 Option Explicit
 
-Dim sh, fso, here, target, pyCmd
+Dim sh, fso, here, inst, app, target, pyCmd
 Set sh  = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
-here   = fso.GetParentFolderName(WScript.ScriptFullName)
-target = here & "\watchdog.py"
+here = fso.GetParentFolderName(WScript.ScriptFullName)      ' ...\scripts
+app  = fso.GetParentFolderName(here)                        ' project root
+inst = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\EdifierGuard"
+If fso.FileExists(inst & "\guard.py") Then app = inst
+
+target = app & "\watchdog.py"
 
 If Not fso.FileExists(target) Then
     MsgBox "watchdog.py not found:" & vbCrLf & target, 16, "Edifier Guard"
@@ -23,11 +31,11 @@ pyCmd = FindPython()
 If pyCmd = "" Then
     MsgBox "Python not found." & vbCrLf & vbCrLf & _
            "Install Python 3.x, or drop a portable python.exe into:" & vbCrLf & _
-           here & "\runtime\", 16, "Edifier Guard"
+           app & "\runtime\", 16, "Edifier Guard"
     WScript.Quit 1
 End If
 
-sh.CurrentDirectory = here
+sh.CurrentDirectory = app
 sh.Run pyCmd & " """ & target & """", 0, False
 
 
@@ -35,7 +43,7 @@ sh.Run pyCmd & " """ & target & """", 0, False
 Function FindPython()
     Dim c
     ' 1) bundled portable runtime
-    For Each c In Array(here & "\runtime\pythonw.exe", here & "\runtime\python.exe")
+    For Each c In Array(app & "\runtime\pythonw.exe", app & "\runtime\python.exe")
         If fso.FileExists(c) Then
             FindPython = """" & c & """"
             Exit Function

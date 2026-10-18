@@ -1,10 +1,12 @@
 @echo off
 chcp 65001 >nul 2>&1
 setlocal
-cd /d "%~dp0"
+for %%I in ("%~dp0..") do set "APP=%%~fI"
+if exist "%LOCALAPPDATA%\EdifierGuard\guard.py" set "APP=%LOCALAPPDATA%\EdifierGuard"
+cd /d "%APP%"
 title Edifier Guard - 停止
 set "PY="
-if exist "%~dp0runtime\python.exe" set "PY=%~dp0runtime\python.exe"
+if exist "%APP%\runtime\python.exe" set "PY=%APP%\runtime\python.exe"
 if not defined PY for /f "delims=" %%i in ('where python 2^>nul') do if not defined PY set "PY=%%i"
 if not defined PY for /f "delims=" %%i in ('py -3 -c "import sys;print(sys.executable)" 2^>nul') do if not defined PY set "PY=%%i"
 if not defined PY (
@@ -15,18 +17,18 @@ if not defined PY (
 set PYTHONIOENCODING=utf-8
 
 echo 正在停止 Edifier Guard...
-if exist "%~dp0watchdog.pid" (
-    set /p WPID=<"%~dp0watchdog.pid"
+if exist "%APP%\watchdog.pid" (
+    set /p WPID=<"%APP%\watchdog.pid"
     call :killone %WPID%
 )
-if exist "%~dp0guard.pid" (
-    set /p GPID=<"%~dp0guard.pid"
+if exist "%APP%\guard.pid" (
+    set /p GPID=<"%APP%\guard.pid"
     call :killone %GPID%
 )
 timeout /t 1 >nul
 
 echo 正在恢复耳机音频端点为可用...
-"%PY%" "%~dp0guard.py" --restore
+"%PY%" "%APP%\guard.py" --restore
 echo.
 echo 已停止。设备已恢复可用，开机不会自动运行。
 pause

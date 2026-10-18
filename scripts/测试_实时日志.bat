@@ -13,5 +13,7 @@ echo ------------------------------------------------------------
 echo   本窗口只读日志，不改任何设备。Ctrl+C 退出。
 echo ============================================================
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -LiteralPath '%~dp0guard.log' -Wait -Tail 25 -Encoding UTF8"
+for %%I in ("%~dp0..") do set "APP=%%~fI"
+if exist "%LOCALAPPDATA%\EdifierGuard\guard.py" set "APP=%LOCALAPPDATA%\EdifierGuard"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -LiteralPath '%APP%\guard.log' -Wait -Tail 25 -Encoding UTF8"
 pause

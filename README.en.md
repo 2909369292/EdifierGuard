@@ -95,12 +95,40 @@ Requirements: **Windows 10/11**, **Python 3.8+** (or a portable interpreter in
 install. **No administrator rights.**
 
 1. Clone or download and unpack this repository.
-2. Double-click **`INSTALL.bat`** (same as `python install.py`): writes the logon
-   launcher to the Startup folder and starts `watchdog.py` + `guard.py`.
-3. Run `python guard.py --doctor` to verify.
+2. Double-click **`INSTALL.bat`** (same as `python install.py`). It:
+   - **copies** everything it needs to a fixed directory — `%LOCALAPPDATA%\EdifierGuard`;
+   - writes a ~1 KB `EdifierGuard.vbs` launcher to your Startup folder (silent, at logon);
+   - starts `watchdog.py` + `guard.py` immediately;
+   - prints a status check.
+3. Verify with `python "%LOCALAPPDATA%\EdifierGuard\guard.py" --doctor`.
 
-Uninstall: delete `EdifierGuard.vbs` from your Startup folder, then
-`python guard.py --restore`.
+> **Why copy to a fixed directory?** So the program is fully **decoupled from the
+> project folder** — you can move, rename or even delete the repo and autostart keeps
+> working. Only a tiny launcher goes into Startup (Windows does not run items inside
+> Startup subfolders anyway). Override the location with the `EDIFIERGUARD_HOME`
+> environment variable (advanced).
+
+### Uninstall
+
+```bat
+python install.py --uninstall          :: stop + remove the launcher (keep the dir)
+python install.py --uninstall --purge  :: also delete the fixed directory
+```
+
+Uninstall stops the processes and restores the audio endpoint to "enabled".
+
+### Layout
+
+```
+EdifierGuard/            <- source / dev folder (move, rename or delete it freely)
+  guard.py  watchdog.py  install.py  INSTALL.bat  guard_config.json
+  lib\hid\               <- bundled hid module
+  runtime\hidapi.dll     <- bundled HID library (drop runtime\python.exe here to bundle Python too)
+  docs\   tools\   scripts\
+
+%LOCALAPPDATA%\EdifierGuard\   <- installed copy that actually runs (+ logs/PIDs)
+Startup\EdifierGuard.vbs       <- ~1 KB silent launcher
+```
 
 ---
 
@@ -116,13 +144,19 @@ Uninstall: delete `EdifierGuard.vbs` from your Startup folder, then
 | Verbose foreground log | `python guard.py --debug` |
 | Restore all endpoints to enabled | `python guard.py --restore` |
 | Clear the fuse | `python guard.py --reset-fuse` |
-| Self-test (logic only) | `python selftest.py` |
-| Self-test with fault injection | `python selftest.py --inject` |
+| Self-test (logic only) | `python tools\selftest.py` |
+| Self-test with fault injection | `python tools\selftest.py --inject` |
 
-Helper scripts: `INSTALL.bat`, `启动.vbs` (manual start), `停止.bat` (stop + restore),
-`测试_状态面板.bat` / `测试_实时日志.bat`, `START_MONITOR.bat`, `FIX_AUDIO_DEVICE.bat`
-(admin, USB audio interface rescue), `CLEAN_OLD_TASK.bat` (admin, remove a legacy
-scheduled task), plus `gui_server.py` + `preview.html`, `repair_device.py`, `watch.py`.
+> After install, the copy that runs lives in the fixed directory
+> (`%LOCALAPPDATA%\EdifierGuard`) — but the commands above work from either copy;
+> they act on the same machine-wide state (only log/PID locations differ).
+
+Helper scripts (all in `scripts\`): `启动.vbs` (manual start), `停止.bat`
+(stop + restore), `测试_状态面板.bat` / `测试_实时日志.bat`, `START_MONITOR.bat`,
+`FIX_AUDIO_DEVICE.bat` (admin, USB audio interface rescue), `CLEAN_OLD_TASK.bat`
+(admin, remove a legacy scheduled task). Developer tools (in `tools\`):
+`gui_server.py` + `preview.html`, `repair_device.py`, `watch.py`, `selftest.py`.
+These scripts auto-resolve the running copy and are **path-independent**.
 
 ---
 
