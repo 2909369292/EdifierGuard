@@ -1,6 +1,6 @@
 # EdifierGuard
 
-> Keeps the audio endpoint of a **HECATE G3 Max** (and similar 2.4 GHz headsets)
+> Keeps the audio endpoint of a **HECATE G3 Max (dock version)** (and similar 2.4 GHz headsets)
 > visible **only while the headset is actually powered on**.
 >
 > Headset offline → hide the audio endpoint. Headset online → restore it.
@@ -16,7 +16,7 @@
 
 ## The problem
 
-The HECATE G3 Max uses a **2.4 GHz USB dongle** that is always plugged in. Windows
+The HECATE G3 Max (dock version) uses a **2.4 GHz USB dongle** that is always plugged in. Windows
 only sees the dongle, so:
 
 - the "HECATE G3 Max" audio endpoint is **always offered**, even when the headset is
@@ -43,7 +43,7 @@ The framework is generic; the detection layer is device-specific.
 ### Supported
 
 Any USB/2.4 GHz headset whose **dongle is always present but whose endpoint stays
-`ACTIVE`** when the headset is off. Built in today: **HECATE G3 Max**
+`ACTIVE`** when the headset is off. Built in today: **HECATE G3 Max (dock version)**
 (`USB\VID_35BB&PID_A22B`, a **Jieli** dongle, `op=0x0A` status frame).
 
 ### Porting to another headset

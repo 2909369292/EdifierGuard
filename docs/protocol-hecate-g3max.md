@@ -1,4 +1,4 @@
-# HECATE G3 Max 接收器 HID 协议（逆向观察记录）
+# HECATE G3 Max（底座版）接收器 HID 协议（逆向观察记录）
 
 > 本文记录的是**在本机观察到的**厂商 HID 报文格式，用于解释 `guard.py` 的检测逻辑。
 > 它不是官方文档；**固件 / 驱动更新可能改变协议**，届时需要重新分析。
@@ -11,7 +11,7 @@
 |---|---|
 | 接收器（dongle） | `USB\VID_35BB&PID_A22B` |
 | 接收器厂商字符串 | `Jieli Technology`（杰理） |
-| 产品字符串 | `HECATE G3 Max` |
+| 产品字符串 | `HECATE G3 Max`（底座版；底座/接收器为 `PID_A22B`） |
 | 耳机直连（未插入时为 `NOTPRESENT`） | `USB\VID_35BB&PID_A22A` |
 | 音频端点（接收器，常驻） | `...&MI_00` 下的 Render/Capture |
 
