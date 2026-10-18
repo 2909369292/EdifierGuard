@@ -1,0 +1,10 @@
+{
+  "mode": "enforce",
+  "poll_interval": 0.5,
+  "poll_interval_idle": 1.2,
+  "idle_after_secs": 25.0,
+  "use_online_bit": false,
+  "offline_confirm_secs": 3.0,
+  "max_apply_failures": 3,
+  "auto_repair": true
+}

@@ -1,0 +1,49 @@
+# ---- 运行时产物（不该入库） ----
+guard.log
+guard.log.*
+watchdog.log
+watchdog.log.*
+guard.pid
+watchdog.pid
+*.pid
+*.pid.disabled
+guard.heartbeat
+*.heartbeat
+guard.fused
+*.fused
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# ---- 构建产物 ----
+build/
+dist/
+*.spec
+
+# ---- 本地备份 / 诊断 / 临时脚本（保留在磁盘，但不入库） ----
+_fixbackup_*/
+_disabled_backup/
+_publish_backup/
+_diag/
+*.bak
+*.old
+*.tmp
+*.ps1
+
+# ---- 编辑器 / 操作系统 ----
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+desktop.ini
+
+# ---- 便携运行时（自行放置，不入库） ----
+runtime/python.exe
+runtime/pythonw.exe
+runtime/python*/

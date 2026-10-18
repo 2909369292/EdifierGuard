@@ -1,0 +1,56 @@
+# 更新日志（Changelog）
+
+本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+---
+
+## [2.0.0] - 2026-10-18
+
+首个公开发布版本。核心目标：**让 HECATE G3 Max 的音频端点在耳机离线时从系统中消失，
+在线时立刻恢复**——免管理员、静默、可自愈、可回滚。
+
+### 特性
+
+- **检测**：轮询接收器（杰理 dongle）厂商 HID 状态帧（`op=0x0A`），以电量为主判据，
+  使用 `IPolicyConfig::SetEndpointVisibility` 隐藏/恢复音频端点。
+- **自适应轮询**：稳定一段时间后自动降频（`0.5s → 1.2s`），空闲约 **0.15% 单核 CPU**。
+- **看门狗**：`watchdog.py` 在 `guard.py` 退出**或卡死**（心跳超时）时自动重启；
+  秒退多次后进入低频「哨兵模式」而非放弃。
+- **操作后独立校验**：用 `IMMDeviceEnumerator` + `IAudioEndpointVolume` 复核，
+  不被自己的返回值欺骗；不符即**回滚为可用**。
+- **非对称防抖**：上线立即生效，离线需持续确认（默认 3s）。
+- **故障隔离**：底层设备被禁用（PnP 码 22）时完全不动端点。
+- **自动熔断**：连续失败后转只观察模式，可 `--reset-fuse` 恢复。
+- **启动自愈**：开机先把可能卡住的端点恢复为可用，再由判定决定去留。
+- **诊断**：`--doctor` / `--status` / `--list` / `--once` / `--monitor` / `--debug`；
+  日志自动轮转（512 KB）。
+
+### 相对内部 v1 的关键修复
+
+- 修复「空集合也算成功」导致的**假成功**与端点永久屏蔽（v1 的严重缺陷）。
+- 修复 `live` 把 `NOTPRESENT` 端点排除后**锁住**、无法自愈的问题。
+- 修复只依赖 `DeviceState` 判断、忽略 PnP 故障码的问题。
+- 区分「音频端点状态」与「底层 PnP 设备状态」，不再混淆。
+- 停止脚本改为**先停看门狗、再停 guard**，避免停 guard 时被立刻拉起。
+
+### 打包与可移植性
+
+- 移除脚本中**写死的个人 Python 路径**；改为按顺序自动探测：
+  `runtime\` → 当前解释器目录 → `PATH` → Windows `py` 启动器（并跳过 Microsoft Store 占位别名）。
+- 新增 `.gitignore` / `.gitattributes`，运行时产物（日志、pid、心跳、熔断、备份、诊断）不入库。
+- 内置第三方组件（`lib/hid`、`hidapi.dll`）并附许可说明。
+
+### 文档
+
+- `README.md`（中文，主文档）/ `README.en.md`（英文）。
+- `docs/protocol-hecate-g3max.md`：接收器 HID 协议逆向记录。
+- `docs/design-notes.md`：隐藏端点 vs 切换默认设备的取舍。
+- `docs/legacy-design-v1.md`、`docs/lessons-v1-to-v2.md`、`docs/incident-2026-10-16.md`：历史设计、复盘与事故分析。
+- `docs/THIRD_PARTY_LICENSES.md`：第三方许可全文。
+
+---
+
+## [1.x] - 内部版本（未公开）
+
+早期「守护音频设备」原型。由于存在**假成功 / 永久屏蔽端点**的严重缺陷而被
+v2 取代；相关设计与复盘见 `docs/` 下的历史文档。

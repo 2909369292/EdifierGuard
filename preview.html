@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Edifier G3 Max — 候选信号观察器</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Microsoft YaHei","Segoe UI",sans-serif;
+         background:#f4f6f9; color:#1b1f24; }
+  header { padding:14px 20px 8px; }
+  h1 { margin:0 0 4px; font-size:19px; }
+  .sub { color:#667085; font-size:12.5px; line-height:1.65; }
+  .wrap { padding:0 20px 20px; }
+
+  .verdict { display:flex; align-items:center; gap:12px; padding:12px 16px;
+             border-radius:10px; border:1px solid #e3e6ec; background:#fff; margin-top:12px; }
+  .verdict .vd-dot { width:12px; height:12px; border-radius:50%; background:#98a2b3; flex:none; }
+  .verdict .vd-txt b { display:block; font-size:16px; }
+  .verdict .vd-txt span { font-size:11.5px; color:#667085; }
+  .verdict .vd-hint { margin-left:auto; font-size:11px; color:#98a2b3; text-align:right; }
+  .verdict.online  { background:#f0fdf4; border-color:#a6f4c5; }
+  .verdict.online .vd-dot { background:#12b76a; box-shadow:0 0 0 4px rgba(18,183,106,.18); }
+  .verdict.online .vd-txt b { color:#067647; }
+  .verdict.offline { background:#fef3f2; border-color:#fecdca; }
+  .verdict.offline .vd-dot { background:#f04438; box-shadow:0 0 0 4px rgba(240,68,56,.16); }
+  .verdict.offline .vd-txt b { color:#b42318; }
+  .verdict.partial { background:#fffaeb; border-color:#fedf89; }
+  .verdict.partial .vd-dot { background:#f79009; }
+  .verdict.partial .vd-txt b { color:#b54708; }
+
+  h2.sec { font-size:13px; color:#344054; margin:18px 0 8px; }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .card { background:#fff; border:1px solid #e3e6ec; border-radius:10px;
+          padding:10px 12px 11px; }
+  .card.live { border-color:#e05d4f; box-shadow:0 0 0 3px rgba(224,93,79,.13); }
+  .card .t { font-size:11.5px; font-weight:700; color:#344054; }
+  .card .big { font-family:Consolas,monospace; font-size:20px; font-weight:700;
+               color:#98a2b3; margin:4px 0 2px; word-break:break-all; line-height:1.15; }
+  .card.live .big { color:#c0392b; }
+  .card .d { font-size:10.5px; color:#98a2b3; line-height:1.5; }
+
+  table.bytes { width:100%; border-collapse:collapse; background:#fff;
+                border:1px solid #e3e6ec; border-radius:10px; overflow:hidden; font-size:11.5px; }
+  table.bytes th { background:#f8f9fb; color:#475467; font-weight:700; text-align:left;
+                   padding:7px 9px; border-bottom:1px solid #eef0f4; }
+  table.bytes td { padding:6px 9px; border-bottom:1px solid #f4f5f7;
+                   font-family:Consolas,monospace; color:#344054; }
+  table.bytes tr:last-child td { border-bottom:none; }
+  .vary { color:#c0392b; font-weight:700; }
+  .still { color:#98a2b3; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:9px; font-size:10px;
+          background:#eef0f4; color:#667085; font-family:"Microsoft YaHei"; }
+  .pill.v { background:#fee4e2; color:#b42318; }
+
+  .rank { background:#fff; border:1px solid #e3e6ec; border-radius:10px; padding:11px 14px; margin-top:12px; }
+  .rank h3 { margin:0 0 7px; font-size:12.5px; color:#344054; }
+  .rank ol { margin:0; padding-left:20px; font-size:12px; color:#475467; line-height:1.85; }
+  .rank b { color:#c0392b; }
+
+  .logs { background:#fff; border:1px solid #e3e6ec; border-radius:10px; margin-top:12px; }
+  .logs h3 { margin:0; padding:9px 14px; font-size:12.5px; color:#344054;
+             border-bottom:1px solid #eef0f4; }
+  #log { font-family:Consolas,monospace; font-size:11.5px; height:220px;
+         overflow:auto; padding:8px 14px; }
+  #log div { padding:1.5px 0; color:#8b95a5; }
+  #log div.hit { color:#c0392b; font-weight:700; }
+  #log div.err { color:#b54708; font-weight:700; }
+  #log div.ok  { color:#067647; }
+  #log .t { color:#9aa4b2; margin-right:8px; }
+  footer { padding:6px 20px 14px; font-size:11px; color:#98a2b3; }
+</style>
+</head>
+<body>
+<header>
+  <h1>候选信号实时观察器</h1>
+  <div class="sub">
+    用耳机做动作：<b>放到底座上</b>（关机充电） → 等 10 秒 → <b>拿起来</b>（自动开机连接）。<br>
+    下面每个信号都会记录「历史是否变过」，<b class="vary">红色</b>的就是会变化的字节 —— 那才是可用信号。
+  </div>
+</header>
+<div class="wrap">
+
+  <div id="verdict" class="verdict unknown">
+    <div class="vd-dot"></div>
+    <div class="vd-txt"><b id="vd-main">等待数据…</b><span id="vd-why"></span></div>
+    <div class="vd-hint">判定依据：op=0A 电量<br>（你已实测验证）</div>
+  </div>
+
+  <h2 class="sec">① op=0x0A 载荷逐字节拆解（60 字节定长，这里显示关键 6 字节）</h2>
+  <table class="bytes" id="tbl0a">
+    <tr><th>偏移</th><th>含义</th><th>当前值</th><th>历史是否变过</th><th>最近更新</th></tr>
+  </table>
+
+  <h2 class="sec">② 全部 op 命令的当前载荷</h2>
+  <table class="bytes" id="tblop">
+    <tr><th>op</th><th>含义</th><th>次数</th><th>载荷（前12字节）</th><th>最近</th></tr>
+  </table>
+
+  <h2 class="sec">③ 关键信号卡片</h2>
+  <div class="grid" id="grid"></div>
+
+  <div class="rank">
+    <h3>候选信号可靠度排名</h3>
+    <ol>
+      <li><b>op=0A byte[2] 电量</b> —— <b>你已实测验证最准</b>：有值 = 连接，0 = 在底座/关机。</li>
+      <li><b>op=07 对端 MAC</b> —— 每轮心跳出现，出现 = 耳机已建立无线链路。备选方案。</li>
+      <li><b>op=0A 尾部非零字节</b> —— 载荷末尾有零散的非零字节（如 byte[59]=05），可能是状态标记。</li>
+      <li><b>op=0A byte[0] / byte[1]</b> —— 这两个字节在 00/01 之间变化，可能是状态位。</li>
+      <li><b>op=01 byte[0]</b> —— 心跳轮标志（02 开始 / EF 结束），本身不代表在线。</li>
+      <li><b>报文静默（pkt_age）</b> —— 完全无报文即断连，但延迟大。</li>
+    </ol>
+    <div style="font-size:11px;color:#98a2b3;margin-top:6px;">
+      提示：表格里标 <span class="pill v">变化</span> 的字节 = 历史上出现过多个值，
+      值得重点观察。标 <span class="pill">恒定</span> 的 = 从未变过，对判定没用。
+    </div>
+  </div>
+
+  <div class="logs">
+    <h3>变化记录</h3>
+    <div id="log"></div>
+  </div>
+</div>
+<footer id="ft">连接中…</footer>
+
+<script>
+const F0A = {0:'标志A',1:'标志B',2:'电量%',3:'保留',4:'标记1',5:'标记2'};
+
+const CARDS = [
+  { key:'bat',   t:'电量 op=0A[2]',   d:'★ 你验证过的主判据' },
+  { key:'mac',   t:'对端 MAC op=07',  d:'备选判据' },
+  { key:'b0',    t:'op=0A byte[0]',   d:'候选标志位' },
+  { key:'b1',    t:'op=0A byte[1]',   d:'候选标志位' },
+  { key:'tail',  t:'尾部非零字节',     d:'隐藏标志候选' },
+  { key:'pkt',   t:'报文静默',         d:'距上一报文' },
+];
+const grid = document.getElementById('grid');
+const els = {};
+for (const c of CARDS) {
+  const d = document.createElement('div');
+  d.className = 'card';
+  d.innerHTML = `<div class="t">${c.t}</div><div class="big">—</div><div class="d">${c.d}</div>`;
+  grid.appendChild(d);
+  els[c.key] = { root:d, big:d.querySelector('.big'), sub:d.querySelector('.d'), base:c.d };
+}
+
+const t0a = document.getElementById('tbl0a');
+const top = document.getElementById('tblop');
+const logEl = document.getElementById('log');
+let seen = 0;
+
+function age(a){
+  if (a===null||a===undefined) return '从未';
+  if (a<1) return '刚刚';
+  if (a<60) return a.toFixed(0)+' 秒前';
+  return (a/60).toFixed(1)+' 分前';
+}
+function hx(v){ return v===null||v===undefined?'—':'0x'+v.toString(16).toUpperCase().padStart(2,'0'); }
+
+function paint(k, text, live, sub){
+  const e = els[k];
+  e.big.textContent = text;
+  e.root.classList.toggle('live', !!live);
+  e.sub.textContent = sub || e.base;
+}
+
+async function tick(){
+  try {
+    const r = await fetch('/api/state', {cache:'no-store'});
+    const s = await r.json();
+
+    // ---- ① op=0A 字节表
+    let h1 = '<tr><th>偏移</th><th>含义</th><th>当前值</th><th>历史是否变过</th><th>最近更新</th></tr>';
+    (s.a_bytes||[]).forEach((b,i)=>{
+      if (!b) { h1 += `<tr><td>byte[${i}]</td><td>${F0A[i]||''}</td><td>—</td><td class="still">—</td><td>—</td></tr>`; return; }
+      const cls = b.varied ? 'vary' : 'still';
+      const pill = b.varied ? '<span class="pill v">变化</span>' : '<span class="pill">恒定</span>';
+      h1 += `<tr><td>byte[${i}]</td><td style="font-family:inherit">${F0A[i]||''}</td>`
+          + `<td class="${cls}">${hx(b.val)}</td><td>${pill} (${b.nvals} 种)</td>`
+          + `<td class="${cls}">${age(b.age)}</td></tr>`;
+    });
+    t0a.innerHTML = h1;
+
+    // ---- ② op 表
+    let h2 = '<tr><th>op</th><th>含义</th><th>次数</th><th>载荷（前12字节）</th><th>最近</th></tr>';
+    for (const [k,v] of Object.entries(s.op_table||{})) {
+      h2 += `<tr><td class="vary">${k}</td><td style="font-family:inherit">${v.name}</td>`
+          + `<td>${v.count}</td><td style="font-size:10.5px">${v.hex}</td>`
+          + `<td class="${v.age<12?'vary':'still'}">${age(v.age)}</td></tr>`;
+    }
+    top.innerHTML = h2;
+
+    // ---- ③ 卡片
+    const ab = s.a_bytes || [];
+    const g = (i)=> ab[i] ? ab[i].val : null;
+    const gv = (i)=> ab[i] ? ab[i].varied : false;
+
+    if (s.battery===null||s.battery===undefined) {
+      paint('bat','—',false,'未收到');
+    } else {
+      paint('bat', s.battery+'%', s.battery>0, '最近 '+age(s.battery_age));
+    }
+    paint('mac', s.mac || '未出现', !!(s.mac && s.mac_age<20),
+          s.mac ? ('最近 '+age(s.mac_age)+' · '+s.mac_n+' 次') : '至今未收到');
+    paint('b0', hx(g(0)), gv(0), gv(0) ? '★ 会变化！' : '恒定');
+    paint('b1', hx(g(1)), gv(1), gv(1) ? '★ 会变化！' : '恒定');
+    paint('tail', s.tail || '—', false, '最近 '+age(s.tail_age));
+    paint('pkt', s.pkt_age===null?'无':s.pkt_age.toFixed(1)+'s',
+          s.pkt_age!==null && s.pkt_age<6, '累计 '+s.pkt_n+' 个');
+
+    // ---- 判定
+    const vd = document.getElementById('verdict');
+    vd.className = 'verdict ' + (s.verdict||'unknown');
+    const NAME = {online:'耳机在线 ✓', offline:'耳机已断开 ✗',
+                  partial:'状态切换中…', unknown:'等待数据…'};
+    document.getElementById('vd-main').textContent = NAME[s.verdict]||'等待数据…';
+    document.getElementById('vd-why').textContent = s.why||'';
+
+    // ---- 日志
+    if (s.events.length !== seen) {
+      seen = s.events.length;
+      logEl.innerHTML = s.events.map(e=>
+        `<div class="${e.kind}"><span class="t">${e.t}</span>${e.msg}</div>`).join('');
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    document.getElementById('ft').textContent =
+      `监听 ${(s.interfaces||[]).join(',')} · 运行 ${s.uptime.toFixed(0)}s · 报文 ${s.pkt_n} 个 · 心跳 ${s.hb_n} 轮`;
+  } catch(e) {
+    document.getElementById('ft').textContent = '与后端失联，重试中…';
+  }
+  setTimeout(tick, 300);
+}
+tick();
+</script>
+</body>
+</html>
