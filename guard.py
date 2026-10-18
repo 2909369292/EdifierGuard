@@ -17,7 +17,7 @@ v2 的六条铁律：
   ③ 验证不过就回滚到"可见"（安全方向）    -> 宁可设备多显示，也不让它消失
   ④ 隐藏必须落到 DISABLED，落到 NOTPRESENT 判为失败并回滚
   ⑤ PnP 出问题（问题码 22 等）就完全不动端点，只报告
-  ⑥ 连续失败自动熔断，落 guard.fused，只观察不操作
+  ⑥ 连续失败自动熔断，转入只观察模式（标记在内存里，不落文件）
 
 音频端点状态（注册表 MMDevices\\Audio\\...，注意与 mmdeviceapi.h 的常量不是一套）：
     1          ACTIVE        正常可用
@@ -46,6 +46,8 @@ import sys
 import time
 import winreg
 
+import ipc                      # 本地：全内存进程间状态（运行期零文件）
+
 VERSION = "2.0"
 
 # ---------------- 常量 ----------------
@@ -63,36 +65,44 @@ def _app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def _data_dir():
-    """运行数据（日志 / PID / 心跳 / 熔断 / 配置）放哪。
-
-    - 设了 ``EDIFIERGUARD_HOME`` -> 用它；
-    - 打包成 exe -> 固定用 ``%LOCALAPPDATA%\\EdifierGuard``，
-      这样 exe 放哪都行（根目录 / 启动文件夹 / U 盘），互不影响；
-    - 源码运行 -> 就用项目目录（开发方便）。
-    """
-    env = os.environ.get("EDIFIERGUARD_HOME")
-    if env:
-        return os.path.abspath(env)
-    if getattr(sys, "frozen", False):
-        la = os.environ.get("LOCALAPPDATA")
-        if la and os.path.isdir(la):
-            return os.path.join(la, "EdifierGuard")
-    return _app_dir()
-
-
 APP_DIR = _app_dir()
-HERE = _data_dir()
-try:
-    os.makedirs(HERE, exist_ok=True)
-except Exception:
-    pass
+HERE = APP_DIR
 
-LOG_FILE = os.path.join(HERE, "guard.log")
-PID_FILE = os.path.join(HERE, "guard.pid")
-HB_FILE = os.path.join(HERE, "guard.heartbeat")
-FUSE_FILE = os.path.join(HERE, "guard.fused")
-CONFIG_FILE = os.path.join(HERE, "guard_config.json")
+# ★ 运行期「零文件」：
+#   日志 / PID / 心跳 / 熔断 / 进程状态 全部走内存（见 ipc.py）。
+#   程序在任何情况下都**不会创建**任何文件，所以 exe 复制到
+#   任何一台电脑（含启动文件夹）都能直接用，不留任何痕迹。
+CONFIG_FILE = os.path.join(APP_DIR, "guard_config.json")   # 可选：只读，不创建
+LOG_FILE = os.environ.get("EDIFIERGUARD_LOG") or None      # 默认不写日志
+
+_state = None
+
+
+def state():
+    """惰性连接共享状态；失败返回 None（此时退化为"无状态"运行）。"""
+    global _state
+    if _state is None:
+        try:
+            _state = ipc.attach()
+        except Exception:
+            _state = False          # 标记"试过了，不可用"
+    return _state or None
+
+
+def hb_age():
+    """运行中的守护「心跳」停了多久（秒）；没在跑返回 None。
+
+    ★ 心跳存在共享内存里（见 ipc.py），不落任何文件。
+    """
+    s = state()
+    if s is None:
+        return None
+    try:
+        ms = s.age_ms()
+    except Exception:
+        return None
+    return None if ms is None else ms / 1000.0
+
 
 BATT_TIMEOUT = 2.0          # 超过这么久没读到有效数据 -> unknown
 GRACE_ON_BOOT = 5.0         # 启动宽限期
@@ -120,17 +130,24 @@ if os.path.isdir(_LOCAL_LIB) and _LOCAL_LIB not in sys.path:
 # ---------------- 日志 ----------------
 def _cli():
     return any(a in sys.argv for a in (
-        "--debug", "--once", "--status", "--list", "--doctor", "--restore",
-        "--reset-fuse", "--selftest"))
+        "--debug", "--monitor", "--once", "--status", "--list", "--doctor",
+        "--restore", "--reset-fuse", "--selftest"))
 
 
 def log(msg):
+    """★ 默认不产生任何文件。
+
+    - 命令行模式（--debug / --monitor / --doctor …）打屏；
+    - 设了环境变量 ``EDIFIERGUARD_LOG`` 才写文件（排查用，正常不设）。
+    """
     line = "[%s] %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
     if _cli():
         try:
             print(line, flush=True)
         except Exception:
             pass
+    if not LOG_FILE:
+        return
     try:
         if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 512 * 1024:
             os.replace(LOG_FILE, LOG_FILE + ".old")
@@ -157,24 +174,26 @@ def load_config():
 
 
 def save_default_config():
-    if os.path.isfile(CONFIG_FILE):
-        return
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    """★ 不再写任何文件。
+
+    默认参数就写在本文件里（``DEFAULT_CONFIG``），用户**不需要**任何配置。
+    如果确实想改，可以自己放一个 ``guard_config.json`` 到 exe 旁边，
+    程序只会「读」，永远不会创建它。
+    """
+    return
 
 
 def _remove_pid():
-    """退出时清理 PID 文件。
-    ★ 不清理会在硬杀/崩溃后留下旧 PID；等系统把这个 PID 复用给别的进程，
-      看门狗读到它就会去"重启卡死的 guard"，把无关进程杀掉。
-      这里在正常/信号退出路径清掉，配合看门狗的映像名校验双保险。
+    """退出时清掉共享内存里的本进程 PID。
+
+    ★ 不留旧 PID 是关键：硬杀 / 崩溃后 PID 会被系统复用，
+      看门狗拿旧 PID 去"重启卡死的 guard"就会误杀无关进程。
+      这里在退出路径清掉，配合看门狗的映像名校验双保险。
     """
     try:
-        if os.path.isfile(PID_FILE):
-            os.remove(PID_FILE)
+        st = state()
+        if st is not None and st.u32(ipc.OFF_GUARD_PID) == os.getpid():
+            st.set_u32(ipc.OFF_GUARD_PID, 0)
     except Exception:
         pass
 
@@ -1034,30 +1053,26 @@ def restore_all():
 
 # ================= 熔断 =================
 def fuse_on(reason):
-    try:
-        with open(FUSE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"time": time.strftime("%Y-%m-%d %H:%M:%S"),
-                       "reason": reason}, f, ensure_ascii=False)
-    except Exception:
-        pass
+    st = state()
+    if st is not None:
+        st.set_u32(ipc.OFF_FUSED, 1)
     log("=" * 50)
     log("★ 连续失败，已熔断（%s）" % reason)
     log("  程序转入只观察模式，不再改动任何设备。")
-    log("  排查后执行  python guard.py --reset-fuse  解除。")
+    log("  排查后执行  EdifierGuard.exe --reset-fuse  解除。")
     log("=" * 50)
 
 
 def fuse_present():
-    return os.path.isfile(FUSE_FILE)
+    st = state()
+    return bool(st is not None and st.u32(ipc.OFF_FUSED))
 
 
 def fuse_off():
-    try:
-        if os.path.isfile(FUSE_FILE):
-            os.remove(FUSE_FILE)
-            return True
-    except Exception:
-        pass
+    st = state()
+    if st is not None and st.u32(ipc.OFF_FUSED):
+        st.set_u32(ipc.OFF_FUSED, 0)
+        return True
     return False
 
 
@@ -1141,11 +1156,11 @@ class Guard:
         if now - self.hb_ts < HEARTBEAT_EVERY:
             return
         self.hb_ts = now
-        try:
-            with open(HB_FILE, "w", encoding="utf-8") as f:
-                f.write("%.1f\n" % now)
-        except Exception:
-            pass
+        st = state()
+        if st is not None:
+            st.beat()
+            st.set_u32(ipc.OFF_GUARD_PID, os.getpid())
+            st.set_u32(ipc.OFF_MODE, 1 if self.mode == "enforce" else 0)
 
     # ---------- 是否需要动作 ----------
     def deviations(self, want_visible):
@@ -1240,7 +1255,7 @@ class Guard:
         n = len([e for e in targets_classified() if e["operable"]])
         log("在场目标端点 %d 个" % n)
         if fuse_present():
-            log("★ 检测到熔断标记 guard.fused —— 本次只观察，不操作设备")
+            log("★ 检测到熔断标记 —— 本次只观察，不操作设备")
         log("=" * 54)
 
         # 启动自愈：先无条件恢复可用，再由下面的判定决定是否隐藏
@@ -1398,13 +1413,8 @@ def doctor():
 
     # 判定"按设计隐藏"：所有在场端点都是 DISABLED，且守护正在运行（心跳新鲜）。
     # 这时"不在活跃列表"是正常现象（耳机离线被主动隐藏），不该报成故障。
-    hb_age = None
-    try:
-        with open(HB_FILE, "r", encoding="utf-8") as f:
-            hb_age = time.time() - float(f.read().strip())
-    except Exception:
-        hb_age = None
-    guard_running = hb_age is not None and hb_age < 30
+    hb = hb_age()
+    guard_running = hb is not None and hb < 30
     expected_hidden = (st == "hidden") and guard_running
 
     # 3) 音频 API（权威）
@@ -1445,13 +1455,14 @@ def doctor():
     # 4) 程序自身状态
     print("\n[4/4] 程序状态")
     print("  熔断标记 : %s" % ("★ 已熔断" if fuse_present() else "无"))
-    try:
-        with open(HB_FILE, "r", encoding="utf-8") as f:
-            age = time.time() - float(f.read().strip())
-        print("  心跳     : %.0f 秒前%s" % (age, "（可能在运行）" if age < 30 else "（未运行）"))
-    except Exception:
+    hb = hb_age()
+    if hb is None:
         print("  心跳     : 无（未运行）")
-    print("  配置文件 : %s" % (CONFIG_FILE if os.path.isfile(CONFIG_FILE) else "未创建（用默认值）"))
+    else:
+        print("  心跳     : %.0f 秒前%s"
+              % (hb, "（可能在运行）" if hb < 30 else "（未运行）"))
+    print("  配置文件 : %s"
+          % (CONFIG_FILE if os.path.isfile(CONFIG_FILE) else "未创建（用内置默认值，无需配置）"))
 
     print("\n" + "=" * 68)
     if not problems:
@@ -1579,14 +1590,14 @@ def main():
         log("已有另一个 Guard 实例在运行（或权限更高），本实例退出")
         return
 
-    try:
-        with open(PID_FILE, "w", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
-    except Exception:
-        pass
+    st = state()
+    if st is not None:
+        st.set_u32(ipc.OFF_GUARD_PID, os.getpid())
+        st.set_u32(ipc.OFF_MODE, 1 if cfg["mode"] == "enforce" else 0)
 
     g = Guard(cfg)
     atexit.register(g.shutdown)
+    atexit.register(_remove_pid)
 
     def _sig(signum, frame):
         raise KeyboardInterrupt()

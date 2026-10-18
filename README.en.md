@@ -6,8 +6,10 @@
 > Headset offline → hide the audio endpoint. Headset online → restore it.
 > No administrator rights, silent background, starts at logon.
 >
-> **Ready to run**: [`EdifierGuard.exe`](EdifierGuard.exe) in the repo root is a
+> **One file, nothing else**: [`EdifierGuard.exe`](EdifierGuard.exe) in the repo root is a
 > **single self-contained file** — no Python, no dependencies, no install. **Just double-click it.**
+> At runtime it creates **no files at all** (no logs, no config, no PIDs), so you can copy it
+> to any Windows machine and it just works.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6)
@@ -94,14 +96,15 @@ program **never trusts its own return value**; failures roll back to the **safe*
 
 ## Install
 
-### Option 1 — single-file exe (recommended: no Python, no install, no external paths)
+### Option 1 — single-file exe (recommended: one file does it all)
 
 **`EdifierGuard.exe`** in the repo root is a **self-contained single file**:
 
 - no Python, no `lib\`, no `hidapi.dll`, no external path — everything is packed in;
+- **zero files at runtime**: no logs, config, PID or heartbeat files — all coordination
+  happens in memory (`ipc.py`);
 - **double-click = silent background daemon** (no window, no tray, no UAC);
-- runtime data (logs/config) always lives in `%LOCALAPPDATA%\EdifierGuard\`, so the exe can
-  sit **anywhere** (repo root, Desktop, USB stick) — **moving the project changes nothing**.
+- **runs anywhere**: copy it to any Windows 10/11 machine and it works, with no configuration.
 
 ```bat
 EdifierGuard.exe --doctor       :: health check (run this first)
@@ -109,9 +112,11 @@ EdifierGuard.exe --install      :: autostart: copy the exe into your Startup fol
 EdifierGuard.exe --uninstall    :: stop + remove autostart + restore the endpoint to "enabled"
 ```
 
-> `--install` merely copies **the exe itself** into Startup — no registry keys, no external
-> dependency. You can also just drop `EdifierGuard.exe` into Startup manually.
-> Override the data directory with the `EDIFIERGUARD_HOME` environment variable (advanced).
+> `--install` merely copies **the exe itself** into Startup — no registry keys, no service,
+> no scheduled task, no external dependency — and it also **cleans up any legacy autostart
+> method** it finds (old `.vbs` launcher, `Run` registry values, old scheduled tasks, old install dir).
+> You can also just drop `EdifierGuard.exe` into Startup manually (`Win+R` → `shell:startup`).
+> Once it is there, **that one file is everything** — you can delete the project folder.
 
 ### Option 2 — run from source (developers)
 
@@ -120,8 +125,9 @@ Runtime deps are bundled (`lib\hid`, `runtime\hidapi.dll`) — no `pip` install.
 **No administrator rights.**
 
 ```bat
-python watchdog.py            :: background daemon (watchdog -> guard.py)
-python guard.py --doctor      :: health check
+python main.py --doctor       :: health check
+python main.py                :: background daemon (watchdog -> guard.py)
+python watchdog.py            :: same thing
 ```
 
 Build the exe yourself:
@@ -135,14 +141,22 @@ python tools\build_exe.py     :: produces EdifierGuard.exe in the repo root
 
 ```
 EdifierGuard/
-  EdifierGuard.exe         <- ★ single self-contained file (no Python, no external files)
+  EdifierGuard.exe         <- ★ single self-contained file (no Python, no external files,
+                              and it creates no files at runtime)
   main.py                  <- exe entry point (dispatch / console handoff / --install)
-  guard.py  watchdog.py  guard_config.json
+  guard.py  watchdog.py    <- daemon + supervisor
+  ipc.py                   <- in-memory IPC (shared memory + named mutex), no files
+  guard_config.json        <- optional template (read-only; never created by the program)
   lib\hid\                 <- bundled hid module (pure ctypes)
   runtime\hidapi.dll       <- bundled HID library (source runs; already inside the exe)
   docs\   tools\   scripts\
+```
 
-%LOCALAPPDATA%\EdifierGuard\   <- fixed data dir (logs / config / PIDs), wherever the exe lives
+Runtime data: **none**. Diagnostics can optionally log to a file, but only when you ask:
+
+```bat
+set EDIFIERGUARD_LOG=%TEMP%\edifierguard.log
+EdifierGuard.exe --debug
 ```
 
 ---
@@ -164,12 +178,12 @@ EdifierGuard/
 | Version / help | `EdifierGuard.exe --version` / `--help` |
 
 > Running with **no arguments** = silent background daemon (that is what double-click does).
-> When run from source, replace `EdifierGuard.exe` with `python guard.py`
-> (`--install` / `--uninstall` / `--stop` are exe-only). Command output is also saved to
-> `%LOCALAPPDATA%\EdifierGuard\last-output.txt`.
+> When run from source, replace `EdifierGuard.exe` with `python main.py`. Command output goes
+> back to your console; if you double-click a one-shot command with no console, the result is
+> shown in a **message box** — either way **no file is written**.
 
-Helper scripts (all in `scripts\`): `启动.vbs` (manual start, prefers the exe), `停止.bat`
-(stop + restore), `测试_状态面板.bat` / `测试_实时日志.bat`, `START_MONITOR.bat`,
+Helper scripts (all in `scripts\`): `启动.vbs` (manual start, prefers the Startup copy),
+`停止.bat` (stop + restore), `状态.bat` (status panel), `诊断.bat` (health check),
 `FIX_AUDIO_DEVICE.bat` (admin, USB audio interface rescue), `CLEAN_OLD_TASK.bat`
 (admin, remove a legacy scheduled task). Developer tools (in `tools\`):
 `build_exe.py`, `gui_server.py` + `preview.html`, `repair_device.py`, `watch.py`,
@@ -179,7 +193,10 @@ Helper scripts (all in `scripts\`): `启动.vbs` (manual start, prefers the exe)
 
 ## Configuration
 
-`guard_config.json`:
+**No configuration is needed**: the defaults are built into `guard.py`, and the program
+**never creates** a config file. If you really want to tweak things (advanced), drop a
+`guard_config.json` **next to the exe** — it is only ever read, never written.
+[`guard_config.json`](guard_config.json) in the repo is a ready-made template.
 
 | Key | Default | Meaning |
 |---|---|---|

@@ -31,31 +31,9 @@ except Exception:
 
 
 def guard_alive():
-    """检查 guard 进程是否在跑（读 guard.pid + OpenProcess）"""
-    try:
-        with open(guard.PID_FILE, "r", encoding="utf-8") as f:
-            pid = int(f.read().strip())
-    except Exception:
-        return None
-    try:
-        import ctypes
-        import ctypes.wintypes as wt
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        k.OpenProcess.restype = wt.HANDLE
-        k.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
-        k.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
-        k.CloseHandle.argtypes = [wt.HANDLE]
-        h = k.OpenProcess(0x1000, False, pid)      # QUERY_LIMITED_INFORMATION
-        if not h:
-            return False
-        code = wt.DWORD()
-        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
-        k.CloseHandle(h)
-        if not ok:
-            return False
-        return code.value == 259                   # STILL_ACTIVE
-    except Exception:
-        return None
+    """检查后台守护是否在跑（读共享内存里的心跳，运行期不落任何文件）"""
+    age = guard.hb_age()
+    return None if age is None else age < 30
 
 
 def main():

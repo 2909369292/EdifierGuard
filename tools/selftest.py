@@ -129,18 +129,14 @@ def unit_tests():
     check("活跃且 Activate 成功 -> 判成功", ok is True, "hr=0x%08X" % (hr or 0))
 
     # --- 熔断：连续失败必须写标记并转只观察 ---
-    fuse_backup = None
-    if os.path.isfile(G.FUSE_FILE):
-        with open(G.FUSE_FILE, "r", encoding="utf-8") as f:
-            fuse_backup = f.read()
+    fuse_backup = G.fuse_present()
     try:
         G.fuse_on("selftest")
         check("熔断标记可写入", G.fuse_present())
         check("熔断标记可解除", G.fuse_off() and not G.fuse_present())
     finally:
-        if fuse_backup is not None:
-            with open(G.FUSE_FILE, "w", encoding="utf-8") as f:
-                f.write(fuse_backup)
+        if fuse_backup:                     # 原来就是熔断态 -> 还原
+            G.fuse_on("selftest-restore")
 
 
 # ================= 真实故障注入 =================

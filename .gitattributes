@@ -7,8 +7,11 @@
 *.txt   text eol=lf
 *.bat   text eol=crlf
 *.cmd   text eol=crlf
-*.vbs   text eol=crlf
 *.ps1   text eol=crlf
+
+# ★ .vbs 用 UTF-16LE + BOM 保存（WSH 只认 ANSI 或带 BOM 的 Unicode，
+#   ASCII 之外的字符必须以 UTF-16 存，所以这里禁止 git 做任何转换）
+*.vbs   -text
 
 # 二进制
 *.dll binary

@@ -8,29 +8,35 @@
 
 ### 新增
 
-- **单文件 `EdifierGuard.exe`（免安装、免 Python、无任何外部路径依赖）**：
+- **单文件 `EdifierGuard.exe`（免安装、免 Python、零外部依赖）**：
   仓库根目录直接放一个自包含 exe，**双击即静默后台常驻**（无窗口、无托盘、无 UAC）。
   解释器、`hid` 模块与 `hidapi.dll` 全部打包在内，**不再需要 `lib\`、`runtime\`
   或任何外部文件**。
-- **运行数据固定在 `%LOCALAPPDATA%\EdifierGuard\`**（日志 / 配置 / PID / 心跳），
-  因此 exe 放哪都行——项目根目录、桌面、U 盘都一样；**项目搬家无需任何改动**。
+- **运行期「零文件」**：程序在任何情况下都**不创建**日志 / 配置 / pid / 心跳 / 状态文件。
+  guard 与看门狗之间的协作改为**共享内存 + 具名互斥体**（新增 `ipc.py`），
+  进程退出后由系统自动回收。所以**把这一个 exe 复制到任何一台 Windows 电脑都能直接用**，
+  不需要任何配置、不留任何痕迹。
 - exe 命令行：`--doctor` / `--status` / `--list` / `--once` / `--monitor` / `--debug`
-  / `--restore` / `--reset-fuse` / `--stop`（新增）/ `--install` / `--uninstall`
+  / `--restore` / `--reset-fuse` / `--stop` / `--install` / `--uninstall`
   / `--version` / `--help`。
 - **自启管理内建**：`--install` 把 exe 本身复制进「启动」文件夹并立即启动；
   `--uninstall` 停止进程、移除自启，并把音频端点恢复为「可用」。
-- 从命令行运行 exe 时输出会**接回父控制台**，并总是另存一份到 `last-output.txt`。
+- **自动清理旧方案**：`--install` 顺手移除历史上出现过的其它自启方式
+  （旧 `EdifierGuard.vbs` 启动器、注册表 `Run` 项、旧计划任务 `EdifierGuard`、
+  旧安装目录 `%LOCALAPPDATA%\EdifierGuard`）。
+- 双击运行一次性命令、又没有控制台时，结果改用**弹窗**显示（而不是写文件）。
 
 ### 变更
 
-- **移除旧的安装方式**：删除 `install.py` 与 `INSTALL.bat`（不再把程序复制到
-  `%LOCALAPPDATA%` 目录，也不再写 `EdifierGuard.vbs` 启动器）。
-- 新增 `main.py`（exe 入口：角色分派 / 控制台接管 / 自启与卸载）与
-  `tools\build_exe.py`（PyInstaller 打包脚本）。
+- **移除旧的安装方式**：删除 `install.py` 与 `INSTALL.bat`。
+- 新增 `main.py`（exe 入口：角色分派 / 控制台接管 / 自启与卸载）、
+  `ipc.py`（全内存进程间状态）与 `tools\build_exe.py`（PyInstaller 打包脚本）。
 - `guard.py` / `watchdog.py` 现在**同时支持源码运行与打包运行**：打包后自动改用
-  exe 所在目录与固定数据目录，并**重跑自身**拉起 `--guard` 子进程。
+  exe 所在目录，并**重跑自身**拉起 `--guard` 子进程；心跳 / PID / 熔断全部走内存。
 - 看门狗增加**单实例互斥**：重复双击或多份副本不会互相打架。
-- `scripts\` 下的脚本改为**优先使用单文件 exe**，没有 exe 时回退到 Python 源码。
+- `scripts\` 下的脚本改为**优先使用「启动」文件夹里的 exe**，其次项目根目录的 exe，
+  再回退到 Python 源码；共用探测逻辑抽到 `scripts\_env.bat`。
+- 日志改为**默认关闭**：需要排查时设 `EDIFIERGUARD_LOG=<路径>` 才落盘。
 
 ### 说明
 

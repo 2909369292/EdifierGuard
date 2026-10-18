@@ -37,7 +37,9 @@ if errorlevel 1 (
 
 :done
 echo.
-echo   Note: the app itself uses the Startup-folder launcher (EdifierGuard.vbs),
-echo   not a scheduled task. Removing this legacy task is safe.
+echo   Note: the app now auto-starts from the Windows Startup folder
+echo   (a single EdifierGuard.exe), not from a scheduled task.
+echo   Removing this legacy task is safe.
+echo   (EdifierGuard.exe --install already does this automatically.)
 echo.
 pause

@@ -1,33 +1,44 @@
 # -*- coding: utf-8 -*-
-"""EdifierGuard.exe 的入口（也是 `python main.py` 的入口）。
+"""EdifierGuard.exe 的入口（也是 ``python main.py`` 的入口）。
 
 角色分派
 --------
     EdifierGuard.exe                        后台常驻（看门狗 -> 拉起并守护 guard）
-    EdifierGuard.exe --guard                守护本体（由看门狗拉起；也可前台单独跑）
-    EdifierGuard.exe --doctor / --status …  一次性命令，直接跑 guard 的 CLI
-    EdifierGuard.exe --install              安装开机自启（把本程序放进「启动」文件夹）
-    EdifierGuard.exe --uninstall            卸载（移除自启 + 停止 + 恢复端点）
+    EdifierGuard.exe --guard                守护本体（由看门狗拉起）
+    EdifierGuard.exe --doctor / --status …  一次性命令
+    EdifierGuard.exe --install              把本 exe 复制进「启动」文件夹并启动
+    EdifierGuard.exe --uninstall            停止 + 移除自启 + 恢复端点
+    EdifierGuard.exe --stop                 只停止（不动自启）
     EdifierGuard.exe --version / --help
 
-说明
-----
-* 打包是无控制台窗口的（--noconsole），所以**双击 / 开机自启时完全无感**。
-* 从命令行运行时，会把输出接回父控制台（见 `_attach_console`）。
-* 一次性命令的输出**同时**写一份到
-  ``%LOCALAPPDATA%\\EdifierGuard\\last-output.txt``，方便事后查看。
-* 运行数据（日志 / 配置）固定放在 ``%LOCALAPPDATA%\\EdifierGuard\\``；
-  可用环境变量 ``EDIFIERGUARD_HOME`` 改到别处。
+★ 运行期「零文件」
+------------------
+程序在任何情况下都**不会创建**日志 / 配置 / pid / 心跳 / 状态等文件：
+进程间状态全在内存里（``ipc.py`` 的共享内存 + 具名互斥体）。
+
+所以就是这么简单：
+  把这**一个** ``EdifierGuard.exe`` 复制到任何一台 Windows 电脑，
+  丢进「启动」文件夹，开机就会静默运行，不留任何痕迹、不需要任何配置。
+
+唯一的例外（默认关闭）：设了环境变量 ``EDIFIERGUARD_LOG=<路径>`` 才写日志。
 """
+import ctypes
+import ctypes.wintypes as wt
 import os
+import shutil
+import subprocess
 import sys
+import time
+
+import ipc
 
 VERSION = "2.1"
 
-# 会“跑完就退出”的一次性命令
+# 一次性命令（跑完就退出）
 SHORT_CLI = ("--doctor", "--status", "--list", "--once", "--restore", "--reset-fuse")
-# 全部 CLI 命令（含前台常驻的 --monitor / --debug）
-CLI_FLAGS = SHORT_CLI + ("--monitor", "--debug", "--enforce")
+# 前台常驻命令（会一直跑，输出直接进控制台）
+FOREGROUND = ("--monitor", "--debug", "--enforce")
+CLI_FLAGS = SHORT_CLI + FOREGROUND
 
 HELP = """EdifierGuard — HECATE G3 Max（底座版）音频端点守护
 
@@ -48,37 +59,119 @@ HELP = """EdifierGuard — HECATE G3 Max（底座版）音频端点守护
   EdifierGuard.exe --help          本帮助
 
 说明:
-  单文件 exe，**不依赖任何外部路径**（不需要装 Python、不需要 lib/dll）。
-  双击 = 静默后台常驻；命令行运行 = 打印结果（也会存一份到 last-output.txt）。
-  运行数据目录: %LOCALAPPDATA%\\EdifierGuard\\
+  * 单文件 exe，**不依赖任何外部文件或路径**：不需要装 Python，
+    也不需要 lib/dll，**运行时不产生任何日志 / 配置 / pid 文件**。
+  * 复制到任何一台 Windows 电脑都能直接用；
+    放进「启动」文件夹即可开机自启。
+  * 想排查问题时，设个环境变量即可开日志：
+        set EDIFIERGUARD_LOG=%TEMP%\\edifierguard.log
 """
 
 
-# ---------------- 数据目录 ----------------
-def _data_dir():
-    """与 guard.py / watchdog.py 的 _data_dir() 保持一致。"""
-    env = os.environ.get("EDIFIERGUARD_HOME")
-    if env:
-        return os.path.abspath(env)
-    if getattr(sys, "frozen", False):
-        la = os.environ.get("LOCALAPPDATA")
-        if la and os.path.isdir(la):
-            return os.path.join(la, "EdifierGuard")
-    return os.path.dirname(os.path.abspath(__file__))
+# ================= 输出（控制台 / 弹窗） =================
+def _stdout_usable():
+    """调用方是否给了可用的 stdout（管道 / 重定向文件 / 控制台）。"""
+    s = sys.stdout
+    if s is None:
+        # --noconsole 下 PyInstaller 把 sys.stdout 设成 None，
+        # 但父进程给的管道 / 重定向文件其实还在，接回来即可。
+        return _adopt_std_handle()
+    try:
+        return not s.closed
+    except Exception:
+        return False
 
 
-# ---------------- 控制台接管 ----------------
-def _ancestor_pids(depth=8):
-    """沿进程树向上列出祖先 PID。
+def _adopt_std_handle():
+    """把父进程留下的 stdout 句柄接回 sys.stdout。
 
-    onefile 打包后，本进程的**直接父进程**是 PyInstaller 的引导进程
-    （它没有控制台），所以 AttachConsole(-1) 会失败；必须往上找。
+    这样 ``EdifierGuard.exe --status > o.txt``、
+    ``for /f %%i in ('EdifierGuard.exe --status')`` 才能正常工作
+    （也顺带避免输出与控制台交错、编码错乱）。
+    只接管管道 / 文件句柄；控制台句柄交给 _attach_console 处理。
     """
-    import ctypes
-    from ctypes import wintypes as wt
+    try:
+        import msvcrt
+        k = ctypes.windll.kernel32
+        k.GetStdHandle.restype = ctypes.c_void_p        # ★ 64 位句柄，别被截断
+        k.GetStdHandle.argtypes = [ctypes.c_int]
+        k.GetFileType.restype = ctypes.c_uint
+        k.GetFileType.argtypes = [ctypes.c_void_p]
+        h = k.GetStdHandle(-11)                         # STD_OUTPUT_HANDLE
+        if not h or h == ctypes.c_void_p(-1).value:
+            return False
+        if k.GetFileType(ctypes.c_void_p(h)) in (0, 2):  # UNKNOWN / CHAR(控制台)
+            return False
+        fd = msvcrt.open_osfhandle(h, os.O_WRONLY)
+        sys.stdout = os.fdopen(fd, "w", encoding="utf-8",
+                               errors="replace", buffering=1)
+        return True
+    except Exception:
+        return False
 
-    TH32CS_SNAPPROCESS = 0x2
 
+def _reopen_console():
+    try:
+        k = ctypes.windll.kernel32
+        k.SetConsoleOutputCP(65001)
+        k.SetConsoleCP(65001)
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8",
+                          buffering=1, errors="replace")
+        sys.stderr = open("CONOUT$", "w", encoding="utf-8",
+                          buffering=1, errors="replace")
+        return True
+    except Exception:
+        return False
+
+
+def _attach_console():
+    """把 stdout/stderr 接回调用方所在的控制台。
+
+    打包成 onefile 后本进程的**直接父进程**是 PyInstaller 的引导进程
+    （没有控制台），所以 AttachConsole(-1) 会失败；这里沿进程树往上找。
+    """
+    if not getattr(sys, "frozen", False):
+        return True
+    k = ctypes.windll.kernel32
+    if k.AttachConsole(-1):
+        return _reopen_console()
+    for pid in _ancestor_pids(8):
+        if k.AttachConsole(pid):
+            return _reopen_console()
+    return False
+
+
+def _message_box(text, title="EdifierGuard"):
+    """双击运行、又没有控制台时，用弹窗展示结果（不落任何文件）。"""
+    try:
+        ctypes.windll.user32.MessageBoxW(None, (text or "(无输出)")[:4000],
+                                         title, 0x40)
+    except Exception:
+        pass
+
+
+def _run(fn):
+    """跑一个「一次性命令」：优先控制台，其次弹窗。"""
+    if _stdout_usable() or _attach_console():
+        return fn()
+    import contextlib
+    import io
+    buf = io.StringIO()
+    code = 0
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            code = fn() or 0
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 0
+    except Exception as e:
+        buf.write("\n[错误] %r" % (e,))
+    _message_box(buf.getvalue().strip())
+    return code
+
+
+# ================= 进程工具 =================
+def _snapshot():
+    """返回 {pid: (父 pid, 映像名小写)}。"""
     class PROCESSENTRY32(ctypes.Structure):
         _fields_ = [("dwSize", wt.DWORD),
                     ("cntUsage", wt.DWORD),
@@ -94,16 +187,18 @@ def _ancestor_pids(depth=8):
     k = ctypes.windll.kernel32
     k.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
     k.CreateToolhelp32Snapshot.argtypes = [wt.DWORD, wt.DWORD]
-    snap = k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    snap = k.CreateToolhelp32Snapshot(0x2, 0)          # TH32CS_SNAPPROCESS
+    out = {}
     if not snap or snap == ctypes.c_void_p(-1).value:
-        return []
-    parents = {}
+        return out
     try:
         e = PROCESSENTRY32()
         e.dwSize = ctypes.sizeof(PROCESSENTRY32)
         if k.Process32First(snap, ctypes.byref(e)):
             while True:
-                parents[int(e.th32ProcessID)] = int(e.th32ParentProcessID)
+                out[int(e.th32ProcessID)] = (
+                    int(e.th32ParentProcessID),
+                    e.szExeFile.decode("mbcs", "replace").lower())
                 if not k.Process32Next(snap, ctypes.byref(e)):
                     break
     except Exception:
@@ -113,119 +208,110 @@ def _ancestor_pids(depth=8):
             k.CloseHandle(ctypes.c_void_p(snap))
         except Exception:
             pass
+    return out
 
+
+def _ancestor_pids(depth=8):
+    snap = _snapshot()
     out = []
     pid = os.getpid()
     for _ in range(depth):
-        pid = parents.get(pid, 0)
+        pid = snap.get(pid, (0, ""))[0]
         if not pid:
             break
         out.append(pid)
     return out
 
 
-def _reopen_console():
-    import ctypes
-    try:
-        k = ctypes.windll.kernel32
-        k.SetConsoleOutputCP(65001)
-        k.SetConsoleCP(65001)
-        sys.stdout = open("CONOUT$", "w", encoding="utf-8",
-                          buffering=1, errors="replace")
-        sys.stderr = open("CONOUT$", "w", encoding="utf-8",
-                          buffering=1, errors="replace")
-        return True
-    except Exception:
+def _terminate(pid):
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenProcess.restype = wt.HANDLE
+    k.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+    h = k.OpenProcess(0x0001, False, pid)              # PROCESS_TERMINATE
+    if not h:
         return False
+    try:
+        return bool(k.TerminateProcess(h, 0))
+    finally:
+        k.CloseHandle(h)
 
 
-def _attach_console():
-    """把 stdout/stderr 接回调用方所在的控制台（没有就返回 False）。"""
+def _kill_running():
+    """结束共享状态里记录的进程（先看门狗、后 guard，避免立刻被拉起来）。"""
+    wd, guard = ipc.running_pids()
+    me = os.path.basename(sys.executable).lower()
+    killed = []
+    for pid in (wd, guard):
+        if not pid or pid == os.getpid():
+            continue
+        # 确认目标确实是我们自己（防止 PID 被复用后误杀无关进程）
+        img = ""
+        try:
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.OpenProcess.restype = wt.HANDLE
+            h = k.OpenProcess(0x1000, False, pid)     # QUERY_LIMITED_INFORMATION
+            if h:
+                buf = ctypes.create_unicode_buffer(1024)
+                size = ctypes.c_ulong(1024)
+                if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                    img = os.path.basename(buf.value).lower()
+                k.CloseHandle(h)
+        except Exception:
+            pass
+        if img and img != me and "python" not in img:
+            continue
+        if _terminate(pid):
+            killed.append(pid)
+    return killed
+
+
+def _sweep_ours():
+    """兜底：结束所有残留的 EdifierGuard 进程（排除自己和自己的父进程）。
+
+    只在打包后执行 —— 源码运行时映像名是 python.exe，按名字扫会误伤。
+    """
     if not getattr(sys, "frozen", False):
-        return True
-    import ctypes
-    k = ctypes.windll.kernel32
-    if k.AttachConsole(-1):                 # 直接父进程的控制台
-        return _reopen_console()
-    for pid in _ancestor_pids(8):           # 打包后：沿进程树往上找
-        if k.AttachConsole(pid):
-            return _reopen_console()
+        return []
+    snap = _snapshot()
+    me = os.path.basename(sys.executable).lower()
+    skip = {os.getpid()} | set(_ancestor_pids(4))
+    killed = []
+    for pid, (_ppid, name) in snap.items():
+        if pid in skip or name != me:
+            continue
+        if _terminate(pid):
+            killed.append(pid)
+    return killed
+
+
+def _others_count():
+    """当前还有几个别的 EdifierGuard 进程在跑。"""
+    if not getattr(sys, "frozen", False):
+        return 0
+    me = os.path.basename(sys.executable).lower()
+    skip = {os.getpid()} | set(_ancestor_pids(4))
+    return len([p for p, (_pp, n) in _snapshot().items()
+                if p not in skip and n == me])
+
+
+def _wait_gone(timeout=15.0):
+    """等所有别的 EdifierGuard 进程真正退出。
+
+    ★ TerminateProcess 返回后进程还没完全消失，exe 文件仍然被占用，
+      紧接着 copy2 会报 WinError 32（另一个程序正在使用此文件）。
+    """
+    end = time.time() + timeout
+    while time.time() < end:
+        if _others_count() == 0:
+            time.sleep(0.3)                 # 再给文件锁一点释放时间
+            return True
+        time.sleep(0.3)
     return False
 
 
-class _Tee(object):
-    """同时写多个流（控制台 + 文件）。"""
-
-    def __init__(self, *streams):
-        self.streams = [s for s in streams if s is not None]
-
-    def write(self, data):
-        for s in self.streams:
-            try:
-                s.write(data)
-            except Exception:
-                pass
-        return len(data)
-
-    def flush(self):
-        for s in self.streams:
-            try:
-                s.flush()
-            except Exception:
-                pass
-
-    def reconfigure(self, **kw):
-        for s in self.streams:
-            try:
-                s.reconfigure(**kw)
-            except Exception:
-                pass
-
-    def isatty(self):
-        for s in self.streams:
-            try:
-                if s.isatty():
-                    return True
-            except Exception:
-                pass
-        return False
-
-
-def _stdout_usable():
-    """调用方是否给了可用的 stdout（管道 / 重定向文件）。"""
-    s = sys.stdout
-    if s is None:
-        return False
-    try:
-        return not s.closed
-    except Exception:
-        return False
-
-
-def _setup_output(tee=False):
-    """准备输出：优先用调用方给的重定向 / 管道，其次接管父控制台。
-
-    tee=True 时再同时写一份 last-output.txt（一次性命令用）。
-    """
-    if not _stdout_usable():
-        _attach_console()
-    if not tee:
-        return None
-    path = os.path.join(_data_dir(), "last-output.txt")
-    try:
-        f = open(path, "w", encoding="utf-8", errors="replace")
-    except Exception:
-        return None
-    sys.stdout = _Tee(sys.stdout, f)
-    sys.stderr = _Tee(sys.stderr, f)
-    return path
-
-
-# ---------------- 自启 / 卸载 ----------------
+# ================= 自启 / 停止 / 卸载 =================
 def _startup_dir():
     """取「启动」文件夹（SHGetKnownFolderPath，比环境变量可靠）。"""
-    import ctypes
-    import ctypes.wintypes as wt
     try:
         ole32 = ctypes.WinDLL("ole32")
         shell32 = ctypes.WinDLL("shell32")
@@ -255,7 +341,6 @@ def _startup_dir():
 
 
 def _spawn_detached(exe):
-    import subprocess
     si = subprocess.STARTUPINFO()
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = 0
@@ -265,84 +350,100 @@ def _spawn_detached(exe):
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def _kill_ours(data_dir):
-    """终止 data_dir 里 pid 文件指向的、且确属本程序的进程。"""
-    import ctypes
-    import ctypes.wintypes as wt
-    k = ctypes.WinDLL("kernel32", use_last_error=True)
-    k.OpenProcess.restype = wt.HANDLE
-    me = os.path.basename(sys.executable).lower()
-    killed = []
-    for name in ("watchdog.pid", "guard.pid"):
-        pf = os.path.join(data_dir, name)
-        try:
-            with open(pf, "r", encoding="utf-8") as f:
-                pid = int(f.read().strip())
-        except Exception:
-            continue
-        if not pid or pid == os.getpid():
-            continue
-        h = k.OpenProcess(0x1000, False, pid)          # QUERY_LIMITED_INFORMATION
-        if not h:
-            continue
-        try:
-            code = ctypes.c_ulong()
-            if not k.GetExitCodeProcess(h, ctypes.byref(code)) or code.value != 259:
-                continue
-            buf = ctypes.create_unicode_buffer(1024)
-            size = ctypes.c_ulong(1024)
-            img = ""
-            if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
-                img = os.path.basename(buf.value).lower()
-            if img and img != me and "python" not in img:
-                continue                                # PID 被复用，别误杀
-        finally:
-            k.CloseHandle(h)
-        h2 = k.OpenProcess(0x0001, False, pid)          # PROCESS_TERMINATE
-        if h2:
-            k.TerminateProcess(h2, 0)
-            k.CloseHandle(h2)
-            killed.append(pid)
-        try:
-            os.remove(pf)
-        except Exception:
-            pass
-    return killed
+def _cleanup_legacy():
+    """★ 取消历史上出现过的其它自启 / 安装方式（用户明确要求）。
 
+    返回 (removed, needs_admin)：后者需要管理员权限才能删（会提示用户）。
+    """
+    removed = []
+    needs_admin = []
 
-def do_install():
-    if not getattr(sys, "frozen", False):
-        print("--install 仅支持打包后的 EdifierGuard.exe。")
-        return 2
+    # 1) 「启动」文件夹里的旧启动器（旧方案是放一个 .vbs）
+    #    以及卸载时因为「正在运行删不掉」而改名留下的 *.removed
     sd = _startup_dir()
-    if not sd or not os.path.isdir(sd):
-        print("找不到「启动」文件夹。")
-        return 2
-    src = os.path.abspath(sys.executable)
-    dst = os.path.join(sd, os.path.basename(src))
-    if os.path.abspath(dst) != src:
-        import shutil
-        shutil.copy2(src, dst)
-        print("已复制到「启动」文件夹：", dst)
-    else:
-        print("已在「启动」文件夹：", dst)
-    old = os.path.join(sd, "EdifierGuard.vbs")      # 旧版方案残留
-    if os.path.isfile(old):
+    if sd and os.path.isdir(sd):
+        for n in ("EdifierGuard.vbs", "EdifierGuard.bat", "EdifierGuard.cmd",
+                  "EdifierGuard.lnk", "Edifier Guard.vbs",
+                  "EdifierGuard.exe.removed", "EdifierGuard.exe.old"):
+            p = os.path.join(sd, n)
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                    removed.append(p)
+                except Exception:
+                    pass
+
+    # 2) 注册表 Run 项
+    try:
+        import winreg
+        for hive, tag in ((winreg.HKEY_CURRENT_USER, "HKCU"),
+                          (winreg.HKEY_LOCAL_MACHINE, "HKLM")):
+            path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            try:
+                key = winreg.OpenKey(hive, path, 0, winreg.KEY_ALL_ACCESS)
+            except Exception:
+                continue
+            try:
+                hit = []
+                i = 0
+                while True:
+                    try:
+                        nm, val, _ = winreg.EnumValue(key, i)
+                    except OSError:
+                        break
+                    i += 1
+                    if "edifierguard" in (nm or "").lower() or \
+                       "edifierguard" in str(val or "").lower():
+                        hit.append(nm)
+                for nm in hit:
+                    try:
+                        winreg.DeleteValue(key, nm)
+                        removed.append("%s Run: %s" % (tag, nm))
+                    except Exception:
+                        pass
+            finally:
+                winreg.CloseKey(key)
+    except Exception:
+        pass
+
+    # 3) 旧计划任务（多半是当年用管理员建的，普通权限删不掉 -> 提示用户）
+    for tn in ("EdifierGuard", "Edifier Guard", "EdifierGuardWatch"):
         try:
-            os.remove(old)
-            print("已移除旧版启动器：", old)
+            q = subprocess.run(["schtasks", "/Query", "/TN", tn],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+            if q.returncode != 0:
+                continue                        # 本来就没有
+            r = subprocess.run(["schtasks", "/Delete", "/F", "/TN", tn],
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+            if r.returncode == 0:
+                removed.append("计划任务: %s" % tn)
+            else:
+                needs_admin.append("计划任务: %s" % tn)
         except Exception:
             pass
-    _spawn_detached(dst)
-    print("已启动。以后每次登录都会自动运行（静默、无窗口、无 UAC）。")
-    print("卸载：EdifierGuard.exe --uninstall")
-    return 0
+
+    # 4) 上一版方案的固定目录 %LOCALAPPDATA%\EdifierGuard
+    la = os.environ.get("LOCALAPPDATA")
+    if la:
+        legacy = os.path.join(la, "EdifierGuard")
+        if os.path.isdir(legacy):
+            shutil.rmtree(legacy, ignore_errors=True)
+            if not os.path.isdir(legacy):
+                removed.append(legacy)
+
+    return removed, needs_admin
 
 
 def do_stop():
-    data = _data_dir()
-    killed = _kill_ours(data)
+    killed = _kill_running()
+    extra = _sweep_ours()
+    for p in extra:
+        if p not in killed:
+            killed.append(p)
     print("已停止进程:", killed or "（无）")
+    _wait_gone()
     try:
         import guard
         ok, detail = guard.restore_all()
@@ -352,52 +453,126 @@ def do_stop():
     return 0
 
 
-def do_uninstall():
-    data = _data_dir()
-    do_stop()
+def do_install():
+    if not getattr(sys, "frozen", False):
+        print("--install 只支持打包后的 EdifierGuard.exe。")
+        return 2
 
-    removed = []
     sd = _startup_dir()
-    me = os.path.basename(sys.executable).lower()
-    if sd and os.path.isdir(sd):
-        for n in list(os.listdir(sd)):
-            p = os.path.join(sd, n)
-            if not os.path.isfile(p):
-                continue
-            if n.lower() == me or n.lower() == "edifierguard.vbs":
-                try:
-                    os.remove(p)
-                    removed.append(p)
-                except Exception as e:
-                    print("删除失败:", p, e)
-    print("已移除自启:", removed or "（无）")
+    if not sd or not os.path.isdir(sd):
+        print("找不到「启动」文件夹。")
+        return 2
 
-    print("\n完成。运行数据目录（日志/配置）保留在:", data)
-    print("如需一并删除，手动删掉该目录即可。")
+    src = os.path.abspath(sys.executable)
+    dst = os.path.join(sd, os.path.basename(src))
+
+    removed, needs_admin = _cleanup_legacy()
+    if removed:
+        print("已清理旧方案:")
+        for x in removed:
+            print("   -", x)
+    if needs_admin:
+        print("以下旧方案需要管理员权限才能删除:")
+        for x in needs_admin:
+            print("   !", x)
+        print("   -> 请双击运行 scripts\\CLEAN_OLD_TASK.bat（会请求一次 UAC）")
+
+    killed = _kill_running()
+    extra = _sweep_ours()
+    for p in extra:
+        if p not in killed:
+            killed.append(p)
+    if killed:
+        print("已停止旧的进程:", killed)
+    if not _wait_gone():
+        print("警告：仍有旧进程没退出，稍后可能复制失败。")
+
+    if os.path.abspath(dst) != src:
+        ok = False
+        for _ in range(12):
+            try:
+                shutil.copy2(src, dst)
+                ok = True
+                break
+            except PermissionError:
+                time.sleep(0.5)
+        if not ok:
+            print("复制失败：%s 正在被占用，请稍后重试。" % dst)
+            return 1
+        print("已复制到「启动」文件夹:", dst)
+    else:
+        print("已在「启动」文件夹:", dst)
+
+    _spawn_detached(dst)
+    print("已启动。以后每次登录都会静默运行（无窗口、无 UAC、不留任何文件）。")
+    print("卸载: EdifierGuard.exe --uninstall")
     return 0
 
 
-# ---------------- 主入口 ----------------
+def do_uninstall():
+    do_stop()
+    _wait_gone()
+
+    sd = _startup_dir()
+    me = os.path.basename(sys.executable).lower()
+    legacy = (me, "edifierguard.vbs", "edifierguard.bat", "edifierguard.cmd")
+    removed = []
+    failed = []
+
+    if sd and os.path.isdir(sd):
+        for n in list(os.listdir(sd)):
+            if n.lower() not in legacy:
+                continue
+            p = os.path.join(sd, n)
+            if not os.path.isfile(p):
+                continue
+            for _ in range(10):                 # 刚被杀掉的进程可能还占着文件
+                try:
+                    os.remove(p)
+                    removed.append(p)
+                    break
+                except Exception:
+                    time.sleep(0.5)
+            else:
+                # ★ 正在运行的 exe 删不掉（WinError 5），但可以改名 ——
+                #   改掉后缀就等于「不再自启」，退出后随时能手动删。
+                alt = p + ".removed"
+                try:
+                    os.replace(p, alt)
+                    removed.append(alt + "  （正被占用，已改名；退出后可手动删除）")
+                except Exception as e:
+                    failed.append("%s  (%s)" % (p, e))
+
+    if removed:
+        for x in removed:
+            print("已移除自启:", x)
+    elif not failed:
+        print("「启动」文件夹里没有本程序的自启项（本来就没装）。")
+    for x in failed:
+        print("移除失败:", x)
+        print("   -> 请手动删除「启动」文件夹里的 EdifierGuard.exe")
+
+    print("\n完成：进程已停止、音频端点已恢复、自启已移除。")
+    print("本程序运行期不产生任何文件；删掉 EdifierGuard.exe 这一个文件就彻底干净了。")
+    return 0
+
+
+# ================= 主入口 =================
 def main():
     argv = sys.argv[1:]
 
     if "--version" in argv:
-        _setup_output(tee=False)
-        print("EdifierGuard %s" % VERSION)
+        _run(lambda: print("EdifierGuard %s" % VERSION) or 0)
         return 0
     if "--help" in argv or "-h" in argv:
-        _setup_output(tee=False)
-        print(HELP)
+        _run(lambda: print(HELP) or 0)
         return 0
-    if "--stop" in argv:
-        _setup_output(tee=True)
-        return do_stop()
     if "--install" in argv:
-        _setup_output(tee=True)
-        return do_install()
+        return _run(do_install)
     if "--uninstall" in argv or "--remove" in argv:
-        _setup_output(tee=True)
-        return do_uninstall()
+        return _run(do_uninstall)
+    if "--stop" in argv:
+        return _run(do_stop)
 
     if "--guard" in argv:
         # 由看门狗拉起的子进程：不接控制台，安静地干活
@@ -405,10 +580,17 @@ def main():
         import guard
         return guard.main()
 
-    if any(a in CLI_FLAGS for a in argv):
-        _setup_output(tee=any(a in SHORT_CLI for a in argv))
+    if any(a in FOREGROUND for a in argv):
+        if not _stdout_usable():
+            _attach_console()
         import guard
         return guard.main()
+
+    if any(a in CLI_FLAGS for a in argv):
+        def _cli():
+            import guard
+            return guard.main()
+        return _run(_cli)
 
     # 无参数：后台常驻（静默）
     import watchdog

@@ -10,21 +10,25 @@ v1 的看门狗只判断"进程有没有退出"。这次事故暴露了两个盲
   3. 看门狗自己在 guard 秒退 3 次后直接退出 —— 之后没人管了
 
 v2 的做法：
-  - 心跳（guard.heartbeat，guard 每 2 秒写一次）超过 STALE_SECS 没更新 -> 判定卡死，杀掉重启
+  - 心跳（共享内存里的一块状态，guard 每 2 秒更新一次）超过 STALE_SECS 没动 -> 判定卡死，杀掉重启
   - 秒退连续 N 次 -> 不再退出，转为低频"哨兵模式"（每 60s 探一次），
     这样 guard 以后恢复正常了还能被拉起来
   - 启动前先做一次 --restore？不做。guard 自己启动时会自愈，
     在这里做只会让设备闪一下又消失
-  - 熔断（guard.fused）存在时仍然启动 guard（它自己会进只观察模式），
-    但日志里明确写出来
+  - 熔断标记存在时仍然启动 guard（它自己会进只观察模式）
 
-用法（由 VBS 启动器调用，无需手动执行）：
-    pythonw.exe watchdog.py
+★ 运行期零文件：心跳 / PID / 熔断全部在内存里（见 ipc.py），日志默认不写。
+
+用法（一般由 EdifierGuard.exe 或 启动.vbs 拉起，无需手动执行）：
+    EdifierGuard.exe            <- 打包后的单文件 exe
+    pythonw.exe watchdog.py     <- 源码运行
 """
 import os
 import subprocess
 import sys
 import time
+
+import ipc                      # 本地：全内存进程间状态（运行期零文件）
 
 FROZEN = bool(getattr(sys, "frozen", False))
 
@@ -36,31 +40,26 @@ def _app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
-def _data_dir():
-    """必须与 guard.py 的 _data_dir() 完全一致（PID / 心跳 / 日志要对得上）。"""
-    env = os.environ.get("EDIFIERGUARD_HOME")
-    if env:
-        return os.path.abspath(env)
-    if FROZEN:
-        la = os.environ.get("LOCALAPPDATA")
-        if la and os.path.isdir(la):
-            return os.path.join(la, "EdifierGuard")
-    return _app_dir()
-
-
 APP_DIR = _app_dir()
-HERE = _data_dir()
-try:
-    os.makedirs(HERE, exist_ok=True)
-except Exception:
-    pass
-
 GUARD = os.path.join(APP_DIR, "guard.py")
-LOG = os.path.join(HERE, "watchdog.log")
-PIDFILE = os.path.join(HERE, "watchdog.pid")
-GUARD_PID = os.path.join(HERE, "guard.pid")
-HB = os.path.join(HERE, "guard.heartbeat")
-FUSE = os.path.join(HERE, "guard.fused")
+
+# ★ 运行期零文件：
+#   心跳 / PID / 熔断 / 进程状态 全部走共享内存（见 ipc.py），
+#   日志默认**完全不写**；只有设了 EDIFIERGUARD_LOG 才落盘（排查用）。
+LOG = os.environ.get("EDIFIERGUARD_LOG") or None
+
+_STATE = None
+
+
+def state():
+    """共享状态（全内存）；不可用返回 None。"""
+    global _STATE
+    if _STATE is None:
+        try:
+            _STATE = ipc.create()
+        except Exception:
+            _STATE = False
+    return _STATE or None
 
 RESTART_DELAY = 3.0
 HEALTHY_RESET = 60.0
@@ -68,6 +67,8 @@ FAST_EXIT_THRESHOLD = 2.0
 MAX_FAST_EXITS = 3
 STALE_SECS = 180.0        # 心跳超过这么久没更新 -> 判定卡死
 SENTINEL_DELAY = 60.0     # 连续秒退后转入哨兵模式的探测间隔
+WATCH_INTERVAL = 5.0      # 边等 guard 边巡检的间隔
+HANG_GRACE = 30.0         # 刚启动多久内允许还没有心跳（guard 2 秒一跳）
 
 _CANDS = [
     os.path.join(APP_DIR, "runtime", "pythonw.exe"),
@@ -77,8 +78,10 @@ _CANDS = [
 
 
 def _log(msg):
+    """★ 默认不写任何文件；设了 EDIFIERGUARD_LOG 才记录（超过 512KB 轮转）。"""
+    if not LOG:
+        return
     try:
-        # 与 guard.log 一致：超过 512KB 就轮转，避免长期无限增长
         if os.path.exists(LOG) and os.path.getsize(LOG) > 512 * 1024:
             try:
                 os.replace(LOG, LOG + ".old")
@@ -146,24 +149,30 @@ def _kill(pid):
 
 
 def _read_pid():
+    st = state()
+    if st is None:
+        return 0
     try:
-        with open(GUARD_PID, "r", encoding="utf-8") as f:
-            return int(f.read().strip())
+        return st.u32(ipc.OFF_GUARD_PID)
     except Exception:
         return 0
 
 
 def _hb_age():
+    """心跳已经停了多久（秒）；还没跳过返回 None。"""
+    st = state()
+    if st is None:
+        return None
     try:
-        with open(HB, "r", encoding="utf-8") as f:
-            return time.time() - float(f.read().strip())
+        ms = st.age_ms()
     except Exception:
         return None
+    return None if ms is None else ms / 1000.0
 
 
 def _proc_image(pid):
     """取进程映像路径（小写）；查不到返回空串。
-    杀掉前用它确认目标确实是 python —— 防止 guard.pid 陈旧、PID 被复用后误杀无关进程。"""
+    杀掉前用它确认目标确实是本程序 —— 防止 PID 陈旧、被系统复用后误杀无关进程。"""
     import ctypes
     k = ctypes.WinDLL("kernel32", use_last_error=True)
     k.OpenProcess.restype = ctypes.c_void_p
@@ -191,8 +200,8 @@ def check_hang():
         return False
     img = _proc_image(pid)
     if img and not _is_our_image(img):
-        # guard.pid 是陈旧残留，这个 PID 已被别的进程复用 —— 绝不能杀
-        _log("忽略陈旧 guard.pid=%d（现指向 %s，非本程序），不误杀"
+        # 共享内存里的 PID 已被系统复用给别的进程 —— 绝不能杀
+        _log("忽略陈旧 guard pid=%d（现指向 %s，非本程序），不误杀"
              % (pid, img))
         return False
     age = _hb_age()
@@ -228,14 +237,13 @@ def main():
         _log("找不到 guard.py: %s" % GUARD)
         return 1
 
+    st = state()
+    if st is not None:
+        st.set_u32(ipc.OFF_WD_PID, os.getpid())
+        st.set_u32(ipc.OFF_GUARD_PID, 0)
+
     py = _python()
-    _log("看门狗启动 | python=%s | pid=%d%s"
-         % (py, os.getpid(), " | ★ 已熔断（只观察）" if os.path.isfile(FUSE) else ""))
-    try:
-        with open(PIDFILE, "w", encoding="utf-8") as f:
-            f.write(str(os.getpid()))
-    except Exception:
-        pass
+    _log("看门狗启动 | python=%s | pid=%d" % (py, os.getpid()))
 
     fails = 0
     fast_exits = 0
@@ -260,7 +268,13 @@ def main():
                 stderr=subprocess.DEVNULL,
             )
             _log("guard.py 已启动 (pid=%d)" % proc.pid)
-            rc = proc.wait()
+            # ★ 边等边巡检：guard 进程活着但心跳停了（卡死）要能被发现。
+            #   原来直接 proc.wait() 会一直阻塞到 guard 退出，卡死就永远检测不到。
+            while proc.poll() is None:
+                time.sleep(WATCH_INTERVAL)
+                if time.time() - t0 >= HANG_GRACE:
+                    check_hang()
+            rc = proc.returncode
             lived = time.time() - t0
             _log("guard.py 退出 rc=%s 存活 %.0fs" % (rc, lived))
         except Exception as e:

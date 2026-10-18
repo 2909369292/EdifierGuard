@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""把 EdifierGuard 打包成单文件 exe（PyInstaller onefile）。
+r"""把 EdifierGuard 打包成单文件 exe（PyInstaller onefile）。
 
 用法:
     python tools/build_exe.py
@@ -40,6 +40,7 @@ def main():
         "--hidden-import", "hid",
         "--hidden-import", "guard",
         "--hidden-import", "watchdog",
+        "--hidden-import", "ipc",
         "--add-binary", DLL + os.pathsep + ".",
         "--distpath", ROOT,
         "--workpath", os.path.join(ROOT, "build", "pyi"),
