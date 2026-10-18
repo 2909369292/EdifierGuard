@@ -48,7 +48,7 @@ import winreg
 
 import ipc                      # 本地：全内存进程间状态（运行期零文件）
 
-VERSION = "2.0"
+VERSION = "2.2.0"
 
 # ---------------- 常量 ----------------
 VID = 0x35BB
@@ -112,9 +112,14 @@ HEARTBEAT_EVERY = 2.0
 
 DEFAULT_CONFIG = {
     "mode": "enforce",              # enforce | monitor
-    "poll_interval": 0.5,           # HID 轮询（读电量必须快）
-    "poll_interval_idle": 1.2,      # 长时间无变化后的省电轮询间隔
-    "idle_after_secs": 25.0,        # 判定稳定多久后进入省电轮询
+    "poll_interval": 0.5,           # 变化发生后的快速轮询（读电量必须快）
+    "poll_interval_online": 2.0,    # 在线且稳定后的基础间隔（再由 online_backoff 继续放慢）
+    "poll_interval_offline": 5.0,   # 未连接 / 未知 时的间隔
+    "poll_interval_idle": 2.0,      # 兼容旧键（v2.1.x 只有这一个），上面两项缺失时兜底
+    "idle_after_secs": 25.0,        # 判定稳定多久后离开"快速轮询窗口"
+    # ★ 在线且持续稳定 -> 阶梯放慢，上限 5s。[[稳定秒数, 间隔秒], ...]，取满足的最大档。
+    #   只有"在线"这一段会放慢，理由见 Guard.poll_interval()。
+    "online_backoff": [[300.0, 3.0], [900.0, 5.0]],
     "use_online_bit": False,        # True=把"在线标志位"也作为上线依据（更激进）
     "offline_confirm_secs": 3.0,    # 判定"离线"需持续这么久（防接触抖动）
     "max_apply_failures": 3,        # 连续失败多少次 -> 熔断
@@ -1162,6 +1167,52 @@ class Guard:
             st.set_u32(ipc.OFF_GUARD_PID, os.getpid())
             st.set_u32(ipc.OFF_MODE, 1 if self.mode == "enforce" else 0)
 
+    # ---------- 动态轮询 ----------
+    def poll_interval(self, verdict, stable_for):
+        """按"当前判定 + 已经稳定多久"给出下一次轮询间隔。
+
+          * 刚发生变化后的快速窗口（默认 25s） -> poll_interval（0.5s），响应优先；
+          * 离线 / 未知                        -> poll_interval_offline（5.0s）；
+          * 在线且刚稳定下来                    -> poll_interval_online（2.0s）；
+          * 在线且稳定越久                      -> online_backoff 阶梯（3s → 5s，上限 5s）。
+
+        ★ 一个重要边界（不是 bug）：快速窗口只能加快"变化被**发现之后**"的轮询，
+          救不了"变化那一下"本身 —— 变化发生在 t，守宝要等到 t+间隔 才知道，
+          然后才进入快速窗口。所以间隔决定了"第一次发现"的最坏延迟。
+
+        为什么在线/离线用不同间隔：查询帧是链路上唯一的干扰源。
+        链路不在（离线）时查询碰不到任何东西，而且耳机自己拆链路也要过一会儿；
+        在线时才是真的在打扰正在使用的链路。
+        """
+        if stable_for < float(self.cfg.get("idle_after_secs", 25.0)):
+            return max(0.1, float(self.cfg["poll_interval"]))
+        legacy = float(self.cfg.get("poll_interval_idle", 2.0))     # v2.1.x 旧键
+        if verdict != "online":
+            return max(0.1, float(self.cfg.get("poll_interval_offline", legacy)))
+        iv = float(self.cfg.get("poll_interval_online", legacy))
+        for step in (self.cfg.get("online_backoff") or []):
+            try:
+                after, secs = float(step[0]), float(step[1])
+            except Exception:
+                continue
+            if stable_for >= after:
+                iv = max(iv, secs)
+        return max(0.1, iv)
+
+    def sleep_with_heartbeat(self, secs):
+        """睡眠切片，期间照常写心跳。
+
+        轮询可以很慢，但看门狗（心跳停 180s 判卡死）必须始终看到心跳在跳，
+        否则"睡几秒"在它眼里和"卡死"没区别。
+        """
+        end = time.time() + max(0.05, secs)
+        while True:
+            self.heartbeat()                 # 内部自带 2s 节流
+            left = end - time.time()
+            if left <= 0:
+                return
+            time.sleep(min(0.5, left))
+
     # ---------- 是否需要动作 ----------
     def deviations(self, want_visible):
         """真实状态与期望是否一致（不信缓存，每次重新读）"""
@@ -1248,10 +1299,15 @@ class Guard:
         log("=" * 54)
         log("Edifier Guard v%s 启动 | 模式=%s | 管理员=%s | HID=%s"
             % (VERSION, self.mode, is_admin(), self.reader.mode))
-        log("轮询 %.1fs（稳定 %.0fs 后转 %.1fs）| 离线确认 %.1fs | 巡检 %.0fs | 熔断阈值 %d 次"
-            % (cfg["poll_interval"], cfg.get("idle_after_secs", 25.0),
-               cfg.get("poll_interval_idle", 1.2), cfg["offline_confirm_secs"],
-               VERIFY_EVERY, cfg["max_apply_failures"]))
+        back = " ".join("%.0fs→%.0fs" % (float(a), float(s))
+                        for a, s in (cfg.get("online_backoff") or []))
+        log("轮询 变化后 %.1fs；在线 %.1fs%s；未连接 %.1fs"
+            "| 离线确认 %.1fs | 巡检 %.0fs | 熔断阈值 %d 次"
+            % (cfg["poll_interval"], cfg.get("poll_interval_online", 2.0),
+               ("（稳定再放慢 %s）" % back) if back else "",
+               cfg.get("poll_interval_offline", 5.0),
+               cfg["offline_confirm_secs"], VERIFY_EVERY,
+               cfg["max_apply_failures"]))
         n = len([e for e in targets_classified() if e["operable"]])
         log("在场目标端点 %d 个" % n)
         if fuse_present():
@@ -1325,14 +1381,15 @@ class Guard:
                            "可见" if want_visible else "隐藏",
                            current_state(), "是" if fuse_present() else "否"))
 
-                # ★ 自适应轮询：刚发生变化时用快速间隔保证响应，
-                #   长时间稳定后自动放慢，降低唤醒频率（省电）。
+                # ★ 动态轮询：刚发生变化时用快速间隔保证响应；只有"在线且持续稳定"
+                #   才按 online_backoff 逐步放慢（离线时保持原速，见 poll_interval()）。
+                #   睡眠切成小片并继续写心跳，看门狗不会把慢轮询误判成卡死。
                 stable_for = now - self.last_change_ts
-                if stable_for >= float(cfg.get("idle_after_secs", 25.0)):
-                    interval = float(cfg.get("poll_interval_idle", 1.2))
-                else:
-                    interval = float(cfg["poll_interval"])
-                time.sleep(max(0.1, interval))
+                interval = self.poll_interval(v, stable_for)
+                if "--debug" in sys.argv:
+                    log("本轮间隔 %.2fs（判定=%s 已稳定 %.0fs）"
+                        % (interval, v, stable_for))
+                self.sleep_with_heartbeat(interval)
             except KeyboardInterrupt:
                 break
             except Exception as e:

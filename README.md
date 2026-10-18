@@ -91,7 +91,7 @@ HECATE G3 Max **底座版**用的是 **2.4G USB 接收器（dongle）**，而 Wi
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  ① 检测层   HID 轮询接收器（默认 0.5s；判定稳定 25s 后转 1.2s） │
+│  ① 检测层   HID 轮询接收器（变化后 0.5s；未连接 5s；在线 2~5s）      │
 │     发送查询帧 D0 35 BB 01… ，解析 op=0x0A 回包                  │
 │       ├─ 电量 > 0            → online                          │
 │       ├─ 电量 == 0           → offline                         │
@@ -246,8 +246,10 @@ python tools\build_exe.py     :: 产出仓库根目录的 EdifierGuard.exe
 {
   "mode": "enforce",
   "poll_interval": 0.5,
-  "poll_interval_idle": 1.2,
+  "poll_interval_online": 2.0,
+  "poll_interval_offline": 5.0,
   "idle_after_secs": 25.0,
+  "online_backoff": [[300.0, 3.0], [900.0, 5.0]],
   "use_online_bit": false,
   "offline_confirm_secs": 3.0,
   "max_apply_failures": 3,
@@ -258,13 +260,32 @@ python tools\build_exe.py     :: 产出仓库根目录的 EdifierGuard.exe
 | 键 | 默认 | 含义 |
 |---|---|---|
 | `mode` | `enforce` | `enforce` 实际执行；`monitor` 只观察不操作 |
-| `poll_interval` | `0.5` | 快速轮询间隔（秒） |
-| `poll_interval_idle` | `1.2` | 长时间稳定后的省电轮询间隔（秒） |
-| `idle_after_secs` | `25.0` | 判定稳定多久后进入省电轮询 |
+| `poll_interval` | `0.5` | 变化发生后的快速轮询间隔（秒） |
+| `poll_interval_online` | `2.0` | **在线**且稳定后的基础轮询间隔（秒） |
+| `poll_interval_offline` | `5.0` | **未连接 / 未知**时的轮询间隔（秒） |
+| `idle_after_secs` | `25.0` | 判定稳定多久后离开「快速轮询窗口」 |
+| `online_backoff` | 见上 | 在线且持续稳定时**再放慢**的阶梯：`[已稳定秒数, 间隔秒]`，取满足的最大档 |
 | `use_online_bit` | `false` | `true` = 把「在线标志位」也作为上线依据（更激进） |
 | `offline_confirm_secs` | `3.0` | 判定「离线」需持续确认的时长（防接触抖动） |
 | `max_apply_failures` | `3` | 连续失败多少次触发熔断 |
 | `auto_repair` | `true` | 端点卡在异常态但底层设备在场时自动修复 |
+
+（`poll_interval_idle` 是 v2.1.x 的旧键名，仍可识别：上面两项缺席时用它兜底。）
+
+**轮询间隔一览：**
+
+| 耳机状态 | 轮询间隔 |
+|---|---|
+| 刚发生变化（25 秒内） | `0.5s` |
+| **未连接 / 未知** | `5.0s` |
+| **在线**，刚稳定 | `2.0s` |
+| **在线**，稳定 5 分钟后 | `3.0s` |
+| **在线**，稳定 15 分钟后 | `5.0s` |
+
+**一个重要的边界（不是 bug）：** 快速窗口只能加快「变化被**发现之后**」的轮询。
+变化发生在 t 时刻，守宝正睡在当时的间隔里，要等到 t+间隔 才知道 ——
+所以各段的间隔值决定了「第一次发现」的最坏延迟，快速窗口救不了那一下。
+（另外，耳机自己拆链路也要过一会儿，那段时间它仍然读作"在线"。）
 
 ---
 

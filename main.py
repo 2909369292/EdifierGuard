@@ -32,7 +32,7 @@ import time
 
 import ipc
 
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 
 # 一次性命令（跑完就退出）
 SHORT_CLI = ("--doctor", "--status", "--list", "--once", "--restore", "--reset-fuse")

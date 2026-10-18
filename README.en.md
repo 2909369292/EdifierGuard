@@ -73,7 +73,7 @@ Add a *device profile* — no framework change needed: (1) VID/PID + HID collect
 ## How it works
 
 ```
-① Detection : poll the receiver over HID (0.5s; 1.2s when stable)
+① Detection : poll the receiver over HID (0.5s after a change; 2s stable; up to 5s when online)
               send query frame, parse op=0x0A
               battery>0 -> online ; battery==0 / short frame -> offline ; no data -> unknown
 ② Decision  : asymmetric debounce (online = instant, offline = confirm for 3s)
@@ -207,13 +207,32 @@ Helper scripts (all in `scripts\`): `启动.vbs` (manual start, prefers the Star
 | Key | Default | Meaning |
 |---|---|---|
 | `mode` | `enforce` | `enforce` acts; `monitor` only observes |
-| `poll_interval` | `0.5` | fast poll interval (s) |
-| `poll_interval_idle` | `1.2` | slow poll interval once stable (s) |
-| `idle_after_secs` | `25.0` | how long stable before slowing down |
+| `poll_interval` | `0.5` | fast poll interval right after a change (s) |
+| `poll_interval_online` | `2.0` | base poll interval while **online** & stable (s) |
+| `poll_interval_offline` | `5.0` | poll interval while **disconnected / unknown** (s) |
+| `idle_after_secs` | `25.0` | how long stable before leaving the fast-poll window |
+| `online_backoff` | see below | extra ladder used **only while online & stable**: `[stable_secs, interval_secs]`, largest match wins |
 | `use_online_bit` | `false` | also treat the "online bit" as evidence of online |
 | `offline_confirm_secs` | `3.0` | how long "offline" must persist before acting |
 | `max_apply_failures` | `3` | consecutive failures before the fuse blows |
 | `auto_repair` | `true` | auto-repair stuck endpoint states when the device is present |
+
+**Adaptive polling — why only the "online" phase slows down:**
+
+| Headset state | Interval |
+|---|---|
+| Just changed (first 25s) | `0.5s` |
+| **Disconnected / unknown** | `5.0s` |
+| **Online**, just stabilised | `2.0s` |
+| **Online**, stable for 5 min | `3.0s` |
+| **Online**, stable for 15 min | `5.0s` |
+
+**An important boundary (not a bug):** the fast window only speeds up polling *after* a
+change has been **detected**. If the change happens at t, the guard is asleep inside the
+then-current interval and only learns about it at t+interval — so those intervals set the
+worst-case "first detection" delay, and the fast window can't fix that one moment.
+(Also, the headset itself keeps its link up for a while after you put it down, and during
+that time it still reads as "online".)
 
 ---
 

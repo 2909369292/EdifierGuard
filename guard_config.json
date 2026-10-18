@@ -1,8 +1,10 @@
 {
   "mode": "enforce",
   "poll_interval": 0.5,
-  "poll_interval_idle": 1.2,
+  "poll_interval_online": 2.0,
+  "poll_interval_offline": 5.0,
   "idle_after_secs": 25.0,
+  "online_backoff": [[300.0, 3.0], [900.0, 5.0]],
   "use_online_bit": false,
   "offline_confirm_secs": 3.0,
   "max_apply_failures": 3,
