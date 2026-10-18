@@ -5,7 +5,11 @@
 > 耳机离线 → 自动隐藏音频端点；耳机上线 → 自动恢复。全程**免管理员**、静默后台、开机自启。
 >
 > **就一个文件**：根目录的 [`EdifierGuard.exe`](EdifierGuard.exe) 是**单文件自包含**程序 —— 免装 Python、免装依赖、免安装，**双击就跑**。
-> 运行期**不产生任何文件**（没有日志、没有配置、没有 pid），复制到任何一台 Windows 电脑都能直接用。
+> 运行期**不产生任何文件**（没有日志、没有配置、没有 pid、没有安装目录），
+> 复制到任何一台 Windows 电脑都能直接用。
+>
+> 唯一的落盘是单文件打包本身固有的：exe 启动时会把自身解包到 `%TEMP%\_MEIxxxxxx`（约 16 MB），
+> **程序退出时自动删除**；被强杀时可能残留，`--stop` / `--install` / `--uninstall` 会顺手清掉。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6)
@@ -138,6 +142,8 @@ HECATE G3 Max **底座版**用的是 **2.4G USB 接收器（dongle）**，而 Wi
 
 - **不需要**安装 Python，**不需要** `lib/`、`hidapi.dll` 或任何外部路径 —— 全部打进这一个 exe；
 - **运行期零文件**：不生成日志、配置、pid、心跳等任何文件，所有状态都在内存里（见 `ipc.py`）；
+  唯一例外是**打包方式本身**决定的临时解包目录 `%TEMP%\_MEIxxxxxx`（约 16 MB），
+  由 exe 启动时创建、**退出时自动删除**，不属于本程序写入的数据；
 - **双击即用**：双击后**静默**后台常驻（无窗口、无托盘、无 UAC）；
 - **到处能跑**：复制到任何一台 Windows 10/11 电脑都直接可用，不需要任何配置。
 
@@ -335,6 +341,12 @@ A：下次登录（自启）或双击 `scripts\启动.vbs` 即会自愈；也可
 **Q：日志在哪？**
 A：**默认没有日志** —— 程序运行期不产生任何文件。需要排查问题时临时开一个：
 `set EDIFIERGUARD_LOG=%TEMP%\edifierguard.log`，再运行 `EdifierGuard.exe --debug`。
+
+**Q：它会在别的目录里放文件吗？**
+A：只会在 `%TEMP%` 下建一个打包解包目录 `_MEIxxxxxx`（约 16 MB，单文件 exe 的固有行为），
+**正常退出时自动删除**；被强杀（任务管理器结束进程）时可能残留，
+跑一次 `EdifierGuard.exe --stop` / `--install` / `--uninstall` 就会顺手清理掉。
+除此之外**不写任何文件**，也不建安装目录、不写注册表、不建服务。
 
 **Q：项目文件夹删了会怎样？**
 A：把 `EdifierGuard.exe` 放进「启动」文件夹之后（`--install` 就是干这个），

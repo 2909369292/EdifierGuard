@@ -8,8 +8,12 @@
 >
 > **One file, nothing else**: [`EdifierGuard.exe`](EdifierGuard.exe) in the repo root is a
 > **single self-contained file** — no Python, no dependencies, no install. **Just double-click it.**
-> At runtime it creates **no files at all** (no logs, no config, no PIDs), so you can copy it
+> At runtime it creates **no files at all** (no logs, no config, no PIDs, no install folder), so you can copy it
 > to any Windows machine and it just works.
+>
+> The only on-disk artifact is inherent to single-file packaging: the exe unpacks itself into
+> `%TEMP%\_MEIxxxxxx` (~16 MB) on start and **deletes it on exit**. If the process is force-killed the
+> folder may linger — `--stop` / `--install` / `--uninstall` clean those up.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6)
@@ -102,7 +106,8 @@ program **never trusts its own return value**; failures roll back to the **safe*
 
 - no Python, no `lib\`, no `hidapi.dll`, no external path — everything is packed in;
 - **zero files at runtime**: no logs, config, PID or heartbeat files — all coordination
-  happens in memory (`ipc.py`);
+  happens in memory (`ipc.py`). The only exception is packaging-inherent: the exe unpacks
+  itself into `%TEMP%\_MEIxxxxxx` (~16 MB) on start and deletes it on exit;
 - **double-click = silent background daemon** (no window, no tray, no UAC);
 - **runs anywhere**: copy it to any Windows 10/11 machine and it works, with no configuration.
 
@@ -142,7 +147,8 @@ python tools\build_exe.py     :: produces EdifierGuard.exe in the repo root
 ```
 EdifierGuard/
   EdifierGuard.exe         <- ★ single self-contained file (no Python, no external files,
-                              and it creates no files at runtime)
+                              and it creates no files at runtime — beyond the
+                              packaging-inherent %TEMP%\_MEIxxxxxx self-unpack folder)
   main.py                  <- exe entry point (dispatch / console handoff / --install)
   guard.py  watchdog.py    <- daemon + supervisor
   ipc.py                   <- in-memory IPC (shared memory + named mutex), no files

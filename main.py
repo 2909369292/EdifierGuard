@@ -32,7 +32,7 @@ import time
 
 import ipc
 
-VERSION = "2.1"
+VERSION = "2.1.1"
 
 # 一次性命令（跑完就退出）
 SHORT_CLI = ("--doctor", "--status", "--list", "--once", "--restore", "--reset-fuse")
@@ -63,6 +63,11 @@ HELP = """EdifierGuard — HECATE G3 Max（底座版）音频端点守护
     也不需要 lib/dll，**运行时不产生任何日志 / 配置 / pid 文件**。
   * 复制到任何一台 Windows 电脑都能直接用；
     放进「启动」文件夹即可开机自启。
+  * 唯一不可避免的落盘：PyInstaller onefile 启动时会把自身解包到
+    ``%TEMP%\\_MEIxxxxxx``（约 16MB），**正常退出时由引导进程自动删除**。
+    被强杀时可能残留，因此 --stop / --install / --uninstall 会顺手清理它们
+    （见 _sweep_mei），强制结束进程时也改成「从叶子往根杀」，
+    让引导父进程有机会自己清理。
   * 想排查问题时，设个环境变量即可开日志：
         set EDIFIERGUARD_LOG=%TEMP%\\edifierguard.log
 """
@@ -265,23 +270,88 @@ def _kill_running():
     return killed
 
 
+def _pid_depth(pid, snap):
+    """进程在树里的深度（根 = 深 0）。"""
+    d = 0
+    seen = set()
+    while pid in snap and pid not in seen and d < 64:
+        seen.add(pid)
+        p = snap[pid][0]
+        if not p:
+            break
+        pid = p
+        d += 1
+    return d
+
+
 def _sweep_ours():
     """兜底：结束所有残留的 EdifierGuard 进程（排除自己和自己的父进程）。
+
+    ★ 必须「从叶子往根」杀，而且要给父进程留出自己退出的时间：
+      PyInstaller onefile 的引导父进程会**在子进程退出后**负责删除
+      %TEMP%\\_MEIxxxxxx 解包目录。要是直接用 TerminateProcess 干掉父进程，
+      这段清理逻辑就永远不会执行 —— 每杀一次就在 %TEMP% 里留 16MB 垃圾。
 
     只在打包后执行 —— 源码运行时映像名是 python.exe，按名字扫会误伤。
     """
     if not getattr(sys, "frozen", False):
         return []
-    snap = _snapshot()
     me = os.path.basename(sys.executable).lower()
     skip = {os.getpid()} | set(_ancestor_pids(4))
     killed = []
-    for pid, (_ppid, name) in snap.items():
-        if pid in skip or name != me:
-            continue
-        if _terminate(pid):
-            killed.append(pid)
+
+    # 先给「本该自己退出」的进程留时间：子进程刚被杀掉时，
+    # 它的 onefile 父进程正在收尾（删 _MEI、退出），别急着把它也砍了。
+    for _ in range(8):
+        if _others_count() == 0:
+            return []
+        time.sleep(0.4)
+
+    for _round in range(6):
+        snap = _snapshot()
+        targets = [(p, _pid_depth(p, snap)) for p, (_pp, n) in snap.items()
+                   if p not in skip and p not in killed and n == me]
+        if not targets:
+            break
+        deepest = max(d for _p, d in targets)
+        for p, d in targets:
+            if d == deepest and _terminate(p):
+                killed.append(p)
+        time.sleep(0.8)          # 让父进程察觉子进程已退出、自己清理并退出
     return killed
+
+
+def _sweep_mei():
+    """清掉本程序留在 %TEMP% 里的 PyInstaller 解包目录（_MEIxxxxxx）。
+
+    识别方式：目录里同时有 hidapi.dll 与 base_library.zip —— 只有本程序会这样。
+    正在被占用的（正在运行的另一份）删不掉就跳过，绝不报错。
+    只清理 2 分钟以前创建的，避免误伤恰好同时在跑的 --status / --doctor。
+    """
+    if not getattr(sys, "frozen", False):
+        return []
+    import glob
+    import tempfile
+    mine = os.path.abspath(getattr(sys, "_MEIPASS", "") or "")
+    now = time.time()
+    removed = []
+    for d in glob.glob(os.path.join(tempfile.gettempdir(), "_MEI*")):
+        if not os.path.isdir(d):
+            continue
+        if mine and os.path.abspath(d) == mine:
+            continue
+        try:
+            if now - os.path.getmtime(d) < 120:
+                continue                      # 太新 -> 可能是别的实例正在用
+            if not (os.path.isfile(os.path.join(d, "hidapi.dll")) and
+                    os.path.isfile(os.path.join(d, "base_library.zip"))):
+                continue                      # 不是本程序的
+            shutil.rmtree(d, ignore_errors=True)
+            if not os.path.isdir(d):
+                removed.append(d)
+        except Exception:
+            pass
+    return removed
 
 
 def _others_count():
@@ -444,6 +514,9 @@ def do_stop():
             killed.append(p)
     print("已停止进程:", killed or "（无）")
     _wait_gone()
+    swept = _sweep_mei()
+    if swept:
+        print("已清理 %d 个遗留的解包目录（%%TEMP%%\\_MEI*）" % len(swept))
     try:
         import guard
         ok, detail = guard.restore_all()
@@ -486,6 +559,7 @@ def do_install():
         print("已停止旧的进程:", killed)
     if not _wait_gone():
         print("警告：仍有旧进程没退出，稍后可能复制失败。")
+    _sweep_mei()
 
     if os.path.abspath(dst) != src:
         ok = False
@@ -512,6 +586,7 @@ def do_install():
 def do_uninstall():
     do_stop()
     _wait_gone()
+    _sweep_mei()
 
     sd = _startup_dir()
     me = os.path.basename(sys.executable).lower()
