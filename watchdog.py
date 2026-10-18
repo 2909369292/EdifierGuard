@@ -26,8 +26,36 @@ import subprocess
 import sys
 import time
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-GUARD = os.path.join(HERE, "guard.py")
+FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def _app_dir():
+    """程序（单文件 exe 或 .py）所在目录。"""
+    if FROZEN:
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _data_dir():
+    """必须与 guard.py 的 _data_dir() 完全一致（PID / 心跳 / 日志要对得上）。"""
+    env = os.environ.get("EDIFIERGUARD_HOME")
+    if env:
+        return os.path.abspath(env)
+    if FROZEN:
+        la = os.environ.get("LOCALAPPDATA")
+        if la and os.path.isdir(la):
+            return os.path.join(la, "EdifierGuard")
+    return _app_dir()
+
+
+APP_DIR = _app_dir()
+HERE = _data_dir()
+try:
+    os.makedirs(HERE, exist_ok=True)
+except Exception:
+    pass
+
+GUARD = os.path.join(APP_DIR, "guard.py")
 LOG = os.path.join(HERE, "watchdog.log")
 PIDFILE = os.path.join(HERE, "watchdog.pid")
 GUARD_PID = os.path.join(HERE, "guard.pid")
@@ -42,7 +70,7 @@ STALE_SECS = 180.0        # 心跳超过这么久没更新 -> 判定卡死
 SENTINEL_DELAY = 60.0     # 连续秒退后转入哨兵模式的探测间隔
 
 _CANDS = [
-    os.path.join(HERE, "runtime", "pythonw.exe"),
+    os.path.join(APP_DIR, "runtime", "pythonw.exe"),
     os.path.join(os.path.dirname(sys.executable), "pythonw.exe"),
     sys.executable,
 ]
@@ -64,10 +92,29 @@ def _log(msg):
 
 
 def _python():
+    if FROZEN:
+        return sys.executable          # 打包成 exe 后：直接重跑自己（带 --guard）
     for p in _CANDS:
         if p and os.path.isfile(p):
             return p
     return sys.executable
+
+
+def _guard_cmd(py):
+    """构造拉起 guard 的命令行。"""
+    if FROZEN:
+        return [sys.executable, "--guard"]
+    return [py, GUARD]
+
+
+def _is_our_image(img):
+    """进程映像是不是「我们自己」（python / py，或打包后的 exe）。"""
+    name = os.path.basename(img or "").lower()
+    if not name:
+        return True                    # 查不到就保守放行
+    if FROZEN:
+        return name == os.path.basename(sys.executable).lower()
+    return "python" in name or name in ("py.exe", "pyw.exe")
 
 
 def _pid_alive(pid):
@@ -143,9 +190,9 @@ def check_hang():
     if not pid or not _pid_alive(pid):
         return False
     img = _proc_image(pid)
-    if img and "python" not in img:
+    if img and not _is_our_image(img):
         # guard.pid 是陈旧残留，这个 PID 已被别的进程复用 —— 绝不能杀
-        _log("忽略陈旧 guard.pid=%d（现指向 %s，非 python），不误杀"
+        _log("忽略陈旧 guard.pid=%d（现指向 %s，非本程序），不误杀"
              % (pid, img))
         return False
     age = _hb_age()
@@ -157,8 +204,27 @@ def check_hang():
     return False
 
 
+_MUTEX_NAME = "Global\\EdifierGuard_Watchdog_v2"
+
+
+def _already_running():
+    """看门狗单实例：防止重复双击，或「启动文件夹 + 根目录」两份同时跑。"""
+    import ctypes
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateMutexW.restype = ctypes.c_void_p
+    k.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    h = k.CreateMutexW(None, False, _MUTEX_NAME)
+    if not h:
+        return False
+    return ctypes.get_last_error() == 183      # ERROR_ALREADY_EXISTS
+
+
 def main():
-    if not os.path.isfile(GUARD):
+    if _already_running():
+        _log("已有一个看门狗在运行，本实例退出")
+        return 0
+
+    if not FROZEN and not os.path.isfile(GUARD):
         _log("找不到 guard.py: %s" % GUARD)
         return 1
 
@@ -186,8 +252,8 @@ def main():
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = 0
             proc = subprocess.Popen(
-                [py, GUARD],
-                cwd=HERE,
+                _guard_cmd(py),
+                cwd=APP_DIR,
                 creationflags=0x00000008 | 0x08000000,   # DETACHED | NO_WINDOW
                 startupinfo=si,
                 stdout=subprocess.DEVNULL,

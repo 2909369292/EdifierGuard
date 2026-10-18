@@ -52,7 +52,42 @@ VERSION = "2.0"
 VID = 0x35BB
 PID = 0xA22B
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+def _app_dir():
+    """程序（单文件 exe 或 .py）所在目录。
+
+    打包成单文件 exe 后，``__file__`` 指向临时解包目录，
+    因此必须改用 ``sys.executable`` 所在目录。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _data_dir():
+    """运行数据（日志 / PID / 心跳 / 熔断 / 配置）放哪。
+
+    - 设了 ``EDIFIERGUARD_HOME`` -> 用它；
+    - 打包成 exe -> 固定用 ``%LOCALAPPDATA%\\EdifierGuard``，
+      这样 exe 放哪都行（根目录 / 启动文件夹 / U 盘），互不影响；
+    - 源码运行 -> 就用项目目录（开发方便）。
+    """
+    env = os.environ.get("EDIFIERGUARD_HOME")
+    if env:
+        return os.path.abspath(env)
+    if getattr(sys, "frozen", False):
+        la = os.environ.get("LOCALAPPDATA")
+        if la and os.path.isdir(la):
+            return os.path.join(la, "EdifierGuard")
+    return _app_dir()
+
+
+APP_DIR = _app_dir()
+HERE = _data_dir()
+try:
+    os.makedirs(HERE, exist_ok=True)
+except Exception:
+    pass
+
 LOG_FILE = os.path.join(HERE, "guard.log")
 PID_FILE = os.path.join(HERE, "guard.pid")
 HB_FILE = os.path.join(HERE, "guard.heartbeat")
@@ -77,7 +112,7 @@ DEFAULT_CONFIG = {
 }
 
 # 自包含：优先使用随程序分发的 lib/ 目录
-_LOCAL_LIB = os.path.join(HERE, "lib")
+_LOCAL_LIB = os.path.join(APP_DIR, "lib")
 if os.path.isdir(_LOCAL_LIB) and _LOCAL_LIB not in sys.path:
     sys.path.insert(0, _LOCAL_LIB)
 
@@ -319,8 +354,12 @@ class BatteryReader:
 
 
 def _dll_dirs():
-    dirs = [HERE,
+    dirs = [getattr(sys, "_MEIPASS", None),      # 打包后：解包目录（hidapi.dll 在这里）
+            APP_DIR,
+            HERE,
+            os.path.join(APP_DIR, "runtime"),
             os.path.join(HERE, "runtime"),
+            os.path.join(APP_DIR, "lib", "hid"),
             os.path.join(HERE, "lib", "hid"),
             os.path.join(HERE, "_internal"),
             os.path.join(HERE, "_internal", "hid")]

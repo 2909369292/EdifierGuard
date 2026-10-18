@@ -1,37 +1,44 @@
 ' Edifier Guard - manual launcher (no registry changes, no auto-start)
 '
-' Double-click to start the watchdog (watchdog.py) in the background.
+' Double-click to start Edifier Guard in the background.
+'
+' Target resolution:
+'   1. the single-file  EdifierGuard.exe  in the project root
+'      (self-contained: needs no Python and no external files)   <-- preferred
+'   2. otherwise the Python sources (watchdog.py) in the project root
+'
 ' The watchdog launches and supervises guard.py, so use this launcher
 ' (not guard.py directly) to keep the crash-restart protection.
-'
-' Target resolution (stable by design):
-'   1. the fixed install location  %LOCALAPPDATA%\EdifierGuard  (if present)
-'   2. otherwise the project folder this script ships in (..\ from here)
-'
-' Python is auto-detected: bundled runtime\, then PATH, then the py launcher.
 Option Explicit
 
-Dim sh, fso, here, inst, app, target, pyCmd
+Dim sh, fso, here, app, exe, target, pyCmd
 Set sh  = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
 here = fso.GetParentFolderName(WScript.ScriptFullName)      ' ...\scripts
 app  = fso.GetParentFolderName(here)                        ' project root
-inst = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%") & "\EdifierGuard"
-If fso.FileExists(inst & "\guard.py") Then app = inst
+exe  = app & "\EdifierGuard.exe"
 
+' ---- 1) single-file exe ----
+If fso.FileExists(exe) Then
+    sh.CurrentDirectory = app
+    sh.Run """" & exe & """", 0, False
+    WScript.Quit 0
+End If
+
+' ---- 2) Python sources ----
 target = app & "\watchdog.py"
 
 If Not fso.FileExists(target) Then
-    MsgBox "watchdog.py not found:" & vbCrLf & target, 16, "Edifier Guard"
+    MsgBox "Neither EdifierGuard.exe nor watchdog.py was found in:" & vbCrLf & app, 16, "Edifier Guard"
     WScript.Quit 1
 End If
 
 pyCmd = FindPython()
 If pyCmd = "" Then
     MsgBox "Python not found." & vbCrLf & vbCrLf & _
-           "Install Python 3.x, or drop a portable python.exe into:" & vbCrLf & _
-           app & "\runtime\", 16, "Edifier Guard"
+           "Use EdifierGuard.exe instead (no Python needed), or drop a portable" & vbCrLf & _
+           "python.exe into:" & vbCrLf & app & "\runtime\", 16, "Edifier Guard"
     WScript.Quit 1
 End If
 
@@ -58,8 +65,8 @@ Function FindPython()
     FindPython = ""
 End Function
 
-Function OnPath(exe)
+Function OnPath(exeName)
     On Error Resume Next
-    OnPath = (sh.Run("cmd /c where " & exe & " >nul 2>nul", 0, True) = 0)
+    OnPath = (sh.Run("cmd /c where " & exeName & " >nul 2>nul", 0, True) = 0)
     On Error GoTo 0
 End Function

@@ -8,20 +8,29 @@
 
 ### 新增
 
-- **自包含安装**：`python install.py` 现在把运行所需的全部文件**复制**到一个固定目录
-  `%LOCALAPPDATA%\EdifierGuard`，并在「启动」文件夹只放一个约 1KB 的静默启动器。
-  程序因此与项目文件夹**完全解耦**——项目移动、重命名、删除都不影响开机自启。
-- **一键卸载**：`python install.py --uninstall [--purge]`
-  （停止进程 + 移除启动器 + 把音频端点恢复为可用）。
-- 环境变量 `EDIFIERGUARD_HOME` 可覆盖固定目录（高级用法）。
+- **单文件 `EdifierGuard.exe`（免安装、免 Python、无任何外部路径依赖）**：
+  仓库根目录直接放一个自包含 exe，**双击即静默后台常驻**（无窗口、无托盘、无 UAC）。
+  解释器、`hid` 模块与 `hidapi.dll` 全部打包在内，**不再需要 `lib\`、`runtime\`
+  或任何外部文件**。
+- **运行数据固定在 `%LOCALAPPDATA%\EdifierGuard\`**（日志 / 配置 / PID / 心跳），
+  因此 exe 放哪都行——项目根目录、桌面、U 盘都一样；**项目搬家无需任何改动**。
+- exe 命令行：`--doctor` / `--status` / `--list` / `--once` / `--monitor` / `--debug`
+  / `--restore` / `--reset-fuse` / `--stop`（新增）/ `--install` / `--uninstall`
+  / `--version` / `--help`。
+- **自启管理内建**：`--install` 把 exe 本身复制进「启动」文件夹并立即启动；
+  `--uninstall` 停止进程、移除自启，并把音频端点恢复为「可用」。
+- 从命令行运行 exe 时输出会**接回父控制台**，并总是另存一份到 `last-output.txt`。
 
-### 变更（仓库整理）
+### 变更
 
-- 仓库根目录瘦身：开发 / 诊断工具移入 `tools\`，启动 / 停止 / 测试脚本移入 `scripts\`，
-  文档此前已集中到 `docs\`。
-- **路径与位置无关**：新增 `tools\_bootstrap.py`，从自身位置**向上查找**项目根；
-  所有脚本不再写死路径、也不依赖「当前工作目录」，`tools\` / `scripts\` 可任意摆放。
-- `scripts\` 下的脚本会自动指向**正在运行的那一份**（优先固定目录副本）。
+- **移除旧的安装方式**：删除 `install.py` 与 `INSTALL.bat`（不再把程序复制到
+  `%LOCALAPPDATA%` 目录，也不再写 `EdifierGuard.vbs` 启动器）。
+- 新增 `main.py`（exe 入口：角色分派 / 控制台接管 / 自启与卸载）与
+  `tools\build_exe.py`（PyInstaller 打包脚本）。
+- `guard.py` / `watchdog.py` 现在**同时支持源码运行与打包运行**：打包后自动改用
+  exe 所在目录与固定数据目录，并**重跑自身**拉起 `--guard` 子进程。
+- 看门狗增加**单实例互斥**：重复双击或多份副本不会互相打架。
+- `scripts\` 下的脚本改为**优先使用单文件 exe**，没有 exe 时回退到 Python 源码。
 
 ### 说明
 
